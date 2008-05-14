@@ -1,0 +1,39 @@
+[Files]
+File0=ctcnode.c
+Count=1
+File1=mrbus.c
+[Settings]
+Target=PIC16F887
+Active Compiler=BoostC
+[Compiler]
+Include=p16F874.inc
+Context=1
+Sources=1
+Interrupt=1
+OneSpace=1
+Defines=
+[Optimization]
+CalledFunc=1
+InlineDiv=0
+Optimization=2
+[Tools]
+Assembler=c:\applications\mplab\MPASMwin.EXE  /aINHX8M /p%target% /rHEX /w2 /q %name%.asm
+Programmer=c:\picp.exe com1 %target% -s 40 -wp %name%.hex -ec -wc 0x3F72
+Simulator=
+Compiler=0
+[Bookmarks]
+Count=0
+[Breakpoints]
+Count=0
+[Build]
+Assemble=1
+Compile=1
+Program=0
+Simulate=0
+[Plugins]
+Bcd=706F727462000000000000000000
+Button=00706F727462000000000000000000
+Button Block=706F72746200000000000000000000000000
+Led=706F72746200000000000000000000000000
+Led Block=706F727462000000000000000000
+Speed Tester=6B094201040000004E6F6E65
