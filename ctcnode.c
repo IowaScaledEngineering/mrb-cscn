@@ -903,6 +903,13 @@ void PktHandler(void)
 		/* Actually do CTC clearing */
 		CodeCTCRoute(0, 0, rx_buffer[6], rx_buffer[7]);
 		goto PktIgnore;
+	} else if ('T' == rx_buffer[PKT_TYPE]){
+		if (1 == rx_buffer[6])
+		{
+			CodeCTCRoute(rx_buffer[7], 'X', 0, 0);
+		} else if (2 == rx_buffer[6]) {
+			CodeCTCRoute(0, 0, rx_buffer[7], 'X');
+		}
 	}
 
 	/*************** PACKET SUCCESS - PROCESS HERE ***************/
