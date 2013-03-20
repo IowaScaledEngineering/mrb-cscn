@@ -1,0 +1,53 @@
+The AVR version of the MRB-CSCN is a software-only project.  It relies on
+other hardware pieces to make it work.  Specifically, it expects:
+
+- an Awesome Stick as a core (MRB-IAS)
+- an MRB-XIO to do the signal, switch, and turnout I/O
+- a BD-4X tied into XIO ports A0-A3
+
+
+Pin assignment for the XIO:
+A7 - East Turnout Request Reverse
+A6 - East Turnout Request Normal
+A5 - East Turnout Position (low = Normal)
+A4 - East Turnout Control (low = Normal)
+A3 - (via BD4X) Mainline occupancy
+A2 - (via BD4X) Siding occupancy
+A1 - (via BD4X) East OS occupancy
+A0 - (via BD4X) West OS occupancy
+
+B7 - West Turnout Request Reverse
+B6 - West Turnout Request Normal
+B5 - West Turnout Position (low = Normal)
+B4 - West Turnout Control (low = Normal)
+B3 - East Main Signal Red
+B2 - East Siding Signal Red
+B1 - East Siding Signal Yellow
+B0 - East Siding Signal Green
+
+C7 - East Points Upper Signal Red
+C6 - East Points Upper Signal Yellow
+C5 - East Points Upper Signal Green
+C4 - East Points Lower Signal Red
+C3 - East Points Lower Signal Yellow
+C2 - East Points Lower Signal Green
+C1 - East Main Signal Yellow
+C0 - East Main Signal Green
+
+D7 - East Points Upper Signal Red
+D6 - East Points Upper Signal Yellow
+D5 - East Points Upper Signal Green
+D4 - East Points Lower Signal Red
+D3 - East Points Lower Signal Yellow
+D2 - East Points Lower Signal Green
+D1 - East Main Signal Yellow
+D0 - East Main Signal Green
+
+E7 -
+E6 -
+E5 -
+E4 -
+E3 - East Main Signal Red
+E2 - East Siding Signal Red
+E1 - East Siding Signal Yellow
+E0 - East Siding Signal Green
