@@ -7,47 +7,51 @@ other hardware pieces to make it work.  Specifically, it expects:
 
 
 Pin assignment for the XIO:
-A7 - East Turnout Request Reverse
-A6 - East Turnout Request Normal
-A5 - East Turnout Position (low = Normal)
-A4 - East Turnout Control (low = Normal)
-A3 - (via BD4X) Mainline occupancy
-A2 - (via BD4X) Siding occupancy
-A1 - (via BD4X) East OS occupancy
-A0 - (via BD4X) West OS occupancy
 
-B7 - West Turnout Request Reverse
-B6 - West Turnout Request Normal
-B5 - West Turnout Position (low = Normal)
-B4 - West Turnout Control (low = Normal)
-B3 - East Main Signal Red
-B2 - East Siding Signal Red
-B1 - East Siding Signal Yellow
-B0 - East Siding Signal Green
+A0 - West Points Upper Signal Red
+A1 - West Points Upper Signal Yellow
+A2 - West Points Upper Signal Green
+A3 - West Points Lower Signal Red
+A4 - West Points Lower Signal Yellow
+A5 - West Points Lower Signal Green
+A6 - West Main Signal Red
+A7 - West Main Signal Yellow
 
-C7 - East Points Upper Signal Red
-C6 - East Points Upper Signal Yellow
-C5 - East Points Upper Signal Green
-C4 - East Points Lower Signal Red
-C3 - East Points Lower Signal Yellow
-C2 - East Points Lower Signal Green
-C1 - East Main Signal Yellow
-C0 - East Main Signal Green
+B0 - West Main Signal Green
+B1 - West Siding Signal Red
+B2 - West Siding Signal Yellow
+B3 - West Siding Signal Green
+B4 - East Points Upper Signal Red
+B5 - East Points Upper Signal Yellow
+B6 - East Points Upper Signal Green
+B7 - East Points Lower Signal Red
 
-D7 - East Points Upper Signal Red
-D6 - East Points Upper Signal Yellow
-D5 - East Points Upper Signal Green
-D4 - East Points Lower Signal Red
-D3 - East Points Lower Signal Yellow
-D2 - East Points Lower Signal Green
-D1 - East Main Signal Yellow
-D0 - East Main Signal Green
+C0 - East Points Lower Signal Yellow
+C1 - East Points Lower Signal Green
+C2 - East Main Signal Red
+C3 - East Main Signal Yellow
+C4 - East Main Signal Green
+C5 - East Siding Signal Red
+C6 - East Siding Signal Yellow
+C7 - East Siding Signal Green
 
-E7 -
-E6 -
-E5 -
-E4 -
-E3 - East Main Signal Red
-E2 - East Siding Signal Red
-E1 - East Siding Signal Yellow
-E0 - East Siding Signal Green
+D0 - n/c
+D1 - n/c
+D2 - n/c
+D3 - n/c
+D4 - East Turnout Control (low = Normal)
+D5 - West Turnout Control (low = Normal)
+D6 - East Turnout Position (low = Normal)
+D7 - West Turnout Position (low = Normal)
+
+E0 - East Turnout Request Normal
+E1 - East Turnout Request Reverse
+E2 - West Turnout Request Normal
+E3 - West Turnout Request Reverse
+E4 - (via BD4X) West OS occupancy
+E5 - (via BD4X) East OS occupancy
+E6 - (via BD4X) Siding occupancy
+E7 - (via BD4X) Mainline occupancy
+
+
+
