@@ -35,13 +35,13 @@ FUSE_E  = 0x04
 
 # MRBus
 DEFINES = -DMRBUS
-SRCS = $(BASE_NAME).c ../../mrbus/src/mrbus-avr.c ../../mrbus/src/mrbus-crc.c
-INCS = ../../mrbus/src/mrbus.h ../../mrbus/src/mrbus-avr.h
+SRCS = $(BASE_NAME).c ../../mrbus/src/mrbus-avr.c ../../mrbus/src/mrbus-crc.c ../../libs/avr-i2c/avr-i2c-master.c
+INCS = ../../mrbus/src/mrbus.h ../../mrbus/src/mrbus-avr.h ../../libs/avr-i2c/avr-i2c-master.h
 
-AVRDUDE = avrdude -c usbtiny -p $(DEVICE) 
+AVRDUDE = avrdude -c usbtiny -F -p $(DEVICE) 
 
 OBJS = ${SRCS:.c=.o}
-INCLUDES = -I. -I../../mrbus/src -I../../mrbee/src
+INCLUDES = -I. -I../../mrbus/src -I../../libs/avr-i2c/
 CFLAGS  = $(INCLUDES) -Wall -O2
 
 COMPILE = avr-gcc $(DEFINES) -DF_CPU=$(F_CPU) $(CFLAGS) -mmcu=$(DEVICE)

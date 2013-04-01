@@ -26,22 +26,8 @@ LICENSE:
 #include <avr/wdt.h>
 #include <util/delay.h>
 
-#ifdef MRBEE
-// If wireless, redefine the common variables and functions
-#include "mrbee.h"
-#define mrbus_rx_buffer mrbee_rx_buffer
-#define mrbus_tx_buffer mrbee_tx_buffer
-#define mrbus_state mrbee_state
-#define MRBUS_TX_PKT_READY MRBEE_TX_PKT_READY
-#define MRBUS_RX_PKT_READY MRBEE_RX_PKT_READY
-#define mrbux_rx_buffer mrbee_rx_buffer
-#define mrbus_tx_buffer mrbee_tx_buffer
-#define mrbus_state mrbee_state
-#define mrbusInit mrbeeInit
-#define mrbusPacketTransmit mrbeePacketTransmit
-#endif
-
 #include "mrbus.h"
+#include "avr-i2c-master.h"
 
 extern uint8_t mrbus_activity;
 extern uint8_t mrbus_rx_buffer[MRBUS_BUFFER_SIZE];
@@ -52,43 +38,6 @@ uint8_t mrbus_dev_addr = 0;
 
 uint8_t pkt_count = 0;
 
-
-#ifdef ACCURATE_TIMER
-
-// ******** Start 100 Hz Timer - Very Accurate Version
-
-// Initialize a 100Hz timer for use in triggering events.
-// If you need the timer resources back, you can remove this, but I find it
-// rather handy in triggering things like periodic status transmissions.
-// If you do remove it, be sure to yank the interrupt handler and ticks/secs as well
-// and the call to this function in the main function
-
-uint8_t ticks;
-uint8_t secs;
-
-void initialize100HzTimer(void)
-{
-	// Set up timer 1 for 100Hz interrupts
-	TCCR1A = 0;
-	TCCR1B = _BV(CS11) | _BV(CS10);
-	TCCR1C = 0;
-	TIMSK1 = _BV(TOIE1);
-	ticks = 0;
-	secs = 0;
-}
-
-ISR(TIMER1_OVF_vect)
-{
-	TCNT1 += 0xF3CB;
-	ticks++;
-	if (ticks >= 100)
-	{
-		ticks = 0;
-		secs++;
-	}
-}
-
-#else
 
 // ******** Start 100 Hz Timer, 0.16% error version (Timer 0)
 // If you can live with a slightly less accurate timer, this one only uses Timer 0, leaving Timer 1 open
@@ -101,7 +50,8 @@ ISR(TIMER1_OVF_vect)
 // and the call to this function in the main function
 
 uint8_t ticks;
-uint8_t secs;
+uint16_t decisecs=0;
+uint16_t update_decisecs=10;
 
 void initialize100HzTimer(void)
 {
@@ -109,7 +59,7 @@ void initialize100HzTimer(void)
 	TCNT0 = 0;
 	OCR0A = 0xC2;
 	ticks = 0;
-	secs = 0;
+	decisecs = 0;
 	TCCR0A = _BV(WGM01);
 	TCCR0B = _BV(CS02) | _BV(CS00);
 	TIMSK0 |= _BV(OCIE0A);
@@ -117,17 +67,14 @@ void initialize100HzTimer(void)
 
 ISR(TIMER0_COMPA_vect)
 {
-	if (++ticks >= 100)
+	if (++ticks >= 10)
 	{
 		ticks = 0;
-		secs++;
+		decisecs++;
 	}
-	PORTB ^= _BV(PB0);
 }
 
 // End of 100Hz timer
-
-#endif
 
 void PktHandler(void)
 {
@@ -257,12 +204,46 @@ PktIgnore:
 	return;	
 }
 
+/* 0x00-0x04 - input registers */
+/* 0x08-0x0C - output registers */
+/* 0x18-0x1C - direction registers - 0 is output, 1 is input */
+
+#define I2C_RESET         0
+#define I2C_OUTPUT_ENABLE 1
+#define I2C_IRQ           2
+
+
+#define I2C_XIO_ADDRESS 0x40
+
+void xioInitialize()
+{
+	uint8_t i2cBuf[8];
+
+//	DDRB |= _BV(I2C_RESET) | _BV(I2C_OUTPUT_ENABLE);
+//	PORTB &= ~(_BV(I2C_OUTPUT_ENABLE));
+//	PORTB |= _BV(I2C_RESET);
+
+	DDRB = 0x03;
+	PORTB = 0x01;
+
+	i2cBuf[0] = I2C_XIO_ADDRESS;
+	i2cBuf[1] = 0x80 | 0x18;  // 0x80 is auto-increment
+	i2cBuf[2] = 0;
+	i2cBuf[3] = 0;
+	i2cBuf[4] = 0;
+	i2cBuf[5] = 0xC0;
+	i2cBuf[6] = 0xFF;
+	i2c_transmit(i2cBuf, 7, 1);
+	while(i2c_busy());
+}
+
+
 void init(void)
 {
 	// FIXME:  Do any initialization you need to do here.
 	
 	// Clear watchdog (in the case of an 'X' packet reset)
-    MCUSR = 0;
+	MCUSR = 0;
 	wdt_reset();
 	wdt_disable();
 
@@ -270,11 +251,14 @@ void init(void)
 
 	// Initialize MRBus address from EEPROM address 1
 	mrbus_dev_addr = eeprom_read_byte((uint8_t*)MRBUS_EE_DEVICE_ADDR);
+	mrbus_dev_addr = 0x20;
 }
 
 
 int main(void)
 {
+	uint8_t i2cBuf[8];
+	uint8_t changed = 0;
 	// Application initialization
 	init();
 
@@ -287,27 +271,45 @@ int main(void)
 
 	sei();	
 
+	i2c_master_init();
+	xioInitialize();
+
+
+	i2cBuf[0] = I2C_XIO_ADDRESS;
+	i2cBuf[1] = 0x80 | 0x08;  // 0x80 is auto-increment
+	i2cBuf[2] = 0x49;
+	i2cBuf[3] = 0x92;
+	i2cBuf[4] = 0x24;
+	i2cBuf[5] = 0x01;
+	i2cBuf[6] = 0x00;
+	i2c_transmit(i2cBuf, 7, 1);
+
 	while (1)
 	{
-#ifdef MRBEE
-		mrbeePoll();
-#endif
+		wdt_reset();
 		// Handle any packets that may have come in
 		if (mrbus_state & MRBUS_RX_PKT_READY)
 			PktHandler();
 			
-		// FIXME: Do any module-specific behaviours here in the loop.
+		if ( (decisecs >=	update_decisecs) )
+		{
+			decisecs = 0;
+			changed = 1;
+		}
+
 		/* If we need to send a packet and we're not already busy... */
-		if (secs >= 2 && !(mrbus_state & (MRBUS_TX_BUF_ACTIVE | MRBUS_TX_PKT_READY)))
+		if (changed && !(mrbus_state & (MRBUS_TX_BUF_ACTIVE | MRBUS_TX_PKT_READY)))
 		{
 			mrbus_tx_buffer[MRBUS_PKT_SRC] = mrbus_dev_addr;
 			mrbus_tx_buffer[MRBUS_PKT_DEST] = 0xFF;
-			mrbus_tx_buffer[MRBUS_PKT_LEN] = 7;
+			mrbus_tx_buffer[MRBUS_PKT_LEN] = 7;			
 			mrbus_tx_buffer[5] = 'S';
-			mrbus_tx_buffer[6] = pkt_count++;
+			mrbus_tx_buffer[6] = 0x00;
+			mrbus_tx_buffer[7] = 0x00;
 			mrbus_state |= MRBUS_TX_PKT_READY;
-			secs = 0;
-		}	
+			changed = 0;
+		}
+
 
 		// If we have a packet to be transmitted, try to send it here
 		while(mrbus_state & MRBUS_TX_PKT_READY)
@@ -328,7 +330,6 @@ int main(void)
 				break;
 			}
 
-#ifndef MRBEE
 			// If we're here, we failed to start transmission due to somebody else transmitting
 			// Given that our transmit buffer is full, priority one should be getting that data onto
 			// the bus so we can start using our tx buffer again.  So we stay in the while loop, trying
@@ -346,7 +347,6 @@ int main(void)
 				if (mrbus_state & MRBUS_RX_PKT_READY) 
 					PktHandler();
 			}
-#endif
 		}
 	}
 }
