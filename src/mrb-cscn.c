@@ -24,6 +24,7 @@ LICENSE:
 #include <avr/interrupt.h>
 #include <avr/eeprom.h>
 #include <avr/wdt.h>
+#include <string.h>
 #include <util/delay.h>
 
 #include "mrbus.h"
@@ -37,10 +38,7 @@ extern uint8_t mrbus_tx_buffer[MRBUS_BUFFER_SIZE];
 extern uint8_t mrbus_state;
 
 uint8_t mrbus_dev_addr = 0;
-uint8_t pkt_count = 0;
 volatile uint8_t events = 0;
-
-uint8_t deltaSave=0;
 
 #define EVENT_READ_INPUTS    0x01
 #define EVENT_WRITE_OUTPUTS  0x02
@@ -70,12 +68,14 @@ uint8_t deltaSave=0;
 #define OCC_VIRT_W_ADJOIN     0x40
 #define OCC_VIRT_W_APPROACH   0x80
 
-#define XOCC_E_ADJOIN			0x04
+#define XOCC_E_ADJOIN			0x01
 #define XOCC_E_APPROACH			0x02
-#define XOCC_E_APPROACH2		0x01
+#define XOCC_E_APPROACH2		0x04
+#define XOCC_E_TUMBLE         0x08
 #define XOCC_W_ADJOIN			0x10
 #define XOCC_W_APPROACH			0x20
 #define XOCC_W_APPROACH2		0x40
+#define XOCC_W_TUMBLE         0x80
 
 
 #define E_PNTS_BTTN_NORMAL  0x01
@@ -88,6 +88,7 @@ uint8_t deltaSave=0;
 #define E_PNTS_STATUS       0x40
 #define W_PNTS_STATUS       0x80
 
+// EEPROM Location Definitions
 
 #define EE_E_APRCH_ADDR       0x10
 #define EE_E_APRCH2_ADDR      0x11
@@ -95,6 +96,8 @@ uint8_t deltaSave=0;
 #define EE_W_APRCH_ADDR       0x13
 #define EE_W_APRCH2_ADDR      0x14
 #define EE_W_ADJ_ADDR         0x15
+#define EE_E_TUMBLE_ADDR      0x16
+#define EE_W_TUMBLE_ADDR      0x17
 
 #define EE_E_APRCH_PKT        0x20
 #define EE_E_APRCH2_PKT       0x21
@@ -102,6 +105,8 @@ uint8_t deltaSave=0;
 #define EE_W_APRCH_PKT        0x23
 #define EE_W_APRCH2_PKT       0x24
 #define EE_W_ADJ_PKT          0x25
+#define EE_E_TUMBLE_PKT       0x26
+#define EE_W_TUMBLE_PKT       0x27
 
 #define EE_E_APRCH_BITBYTE    0x30
 #define EE_E_APRCH2_BITBYTE   0x31
@@ -109,6 +114,8 @@ uint8_t deltaSave=0;
 #define EE_W_APRCH_BITBYTE    0x33
 #define EE_W_APRCH2_BITBYTE   0x34
 #define EE_W_ADJ_BITBYTE      0x35
+#define EE_E_TUMBLE_BITBYTE   0x36
+#define EE_W_TUMBLE_BITBYTE   0x37
 
 #define EE_E_APRCH_SUBTYPE    0x40
 #define EE_E_APRCH2_SUBTYPE   0x41
@@ -116,7 +123,8 @@ uint8_t deltaSave=0;
 #define EE_W_APRCH_SUBTYPE    0x43
 #define EE_W_APRCH2_SUBTYPE   0x44
 #define EE_W_ADJ_SUBTYPE      0x45
-
+#define EE_E_TUMBLE_SUBTYPE   0x46
+#define EE_W_TUMBLE_SUBTYPE   0x47
 
 uint8_t debounced_inputs[2], old_debounced_inputs[2];
 uint8_t clearance, old_clearance;
@@ -126,6 +134,8 @@ uint8_t turnouts, old_turnouts;
 uint8_t clock_a[2] = {0,0}, clock_b[2] = {0,0};
 uint8_t signalHeads[8], old_signalHeads[8];
 
+// Aspect Definitions
+
 #define ASPECT_LUNAR     0x07
 #define ASPECT_FL_RED    0x06
 #define ASPECT_FL_GREEN  0x05
@@ -134,6 +144,8 @@ uint8_t signalHeads[8], old_signalHeads[8];
 #define ASPECT_YELLOW    0x02
 #define ASPECT_GREEN     0x01
 #define ASPECT_OFF       0x00
+
+// Signal Head Definitions
 
 #define SIG_E_PNTS_UPPER 0
 #define SIG_E_PNTS_LOWER 1
@@ -197,6 +209,71 @@ ISR(TIMER0_COMPA_vect)
 
 // End of 100Hz timer
 
+// Bus voltage monitor
+
+volatile uint16_t busVoltageAccum=0;
+volatile uint16_t busVoltage=0;
+volatile uint8_t busVoltageCount=0;
+
+ISR(ADC_vect)
+{
+	busVoltageAccum += ADC;
+	if (++busVoltageCount >= 64)
+	{
+		busVoltageAccum = busVoltageAccum / 64;
+        //At this point, we're at (Vbus/3) / 5 * 1024
+        //So multiply by 150, divide by 1024, or multiply by 75 and divide by 512
+        busVoltage = ((uint32_t)busVoltageAccum * 75) / 512;
+		busVoltageAccum = 0;
+		busVoltageCount = 0;
+	}
+}
+
+
+void init(void)
+{
+	uint8_t i;
+	// Clear watchdog
+	MCUSR = 0;
+	wdt_reset();
+	wdt_disable();
+
+	// Initialize MRBus address from EEPROM address 1
+	mrbus_dev_addr = eeprom_read_byte((uint8_t*)MRBUS_EE_DEVICE_ADDR);
+	// Bogus addresses, fix to default address
+	if (0xFF == mrbus_dev_addr || 0x00 == mrbus_dev_addr)
+	{
+		mrbus_dev_addr = 0x03;
+		eeprom_write_byte((uint8_t*)MRBUS_EE_DEVICE_ADDR, mrbus_dev_addr);
+	}
+
+	// Setup ADC for bus voltage monitoring
+	ADMUX  = 0x46;  // AVCC reference; ADC6 input
+	ADCSRA = _BV(ADATE) | _BV(ADIF) | _BV(ADPS2) | _BV(ADPS1); // 128 prescaler
+	ADCSRB = 0x00;
+	DIDR0  = 0x00;  // No digitals were harmed in the making of this ADC
+
+	busVoltage = 0;
+	busVoltageAccum = 0;
+	busVoltageCount = 0;
+	ADCSRA |= _BV(ADEN) | _BV(ADSC) | _BV(ADIE) | _BV(ADIF);
+
+	// Initialize signals and such
+	for(i=0; i<sizeof(debounced_inputs); i++)
+		debounced_inputs[i] = old_debounced_inputs[i] = 0;
+	
+	for(i=0; i<sizeof(signalHeads); i++)
+		signalHeads[i] = old_signalHeads[i] = ASPECT_RED;
+
+	clearance = old_clearance = 0;
+	occupancy = old_occupancy = 0;
+	ext_occupancy = old_ext_occupancy = 0;
+	turnouts = old_turnouts = 0;
+}
+
+uint8_t xio1Outputs[4];
+uint8_t xio1Inputs[2];
+
 /* 0x00-0x04 - input registers */
 /* 0x08-0x0C - output registers */
 /* 0x18-0x1C - direction registers - 0 is output, 1 is input */
@@ -204,8 +281,6 @@ ISR(TIMER0_COMPA_vect)
 #define I2C_RESET         0
 #define I2C_OUTPUT_ENABLE 1
 #define I2C_IRQ           2
-
-
 #define I2C_XIO1_ADDRESS 0x4E
 
 void xioInitialize()
@@ -235,40 +310,6 @@ void xioInitialize()
 		events &= ~(EVENT_I2C_ERROR);
 	}
 }
-
-
-void init(void)
-{
-	uint8_t i;
-	// FIXME:  Do any initialization you need to do here.
-	
-	// Clear watchdog (in the case of an 'X' packet reset)
-	MCUSR = 0;
-	wdt_reset();
-	wdt_disable();
-
-	pkt_count = 0;
-
-	// Initialize MRBus address from EEPROM address 1
-	mrbus_dev_addr = eeprom_read_byte((uint8_t*)MRBUS_EE_DEVICE_ADDR);
-	mrbus_dev_addr = 0x20;
-	
-	// Initialize signals and such
-	for(i=0; i<sizeof(debounced_inputs); i++)
-		debounced_inputs[i] = old_debounced_inputs[i] = 0;
-	
-	for(i=0; i<sizeof(signalHeads); i++)
-		signalHeads[i] = old_signalHeads[i] = ASPECT_RED;
-
-	clearance = old_clearance = 0;
-	occupancy = old_occupancy = 0;
-	ext_occupancy = old_ext_occupancy = 0;
-	turnouts = old_turnouts = 0;
-
-}
-
-uint8_t xio1Outputs[4];
-uint8_t xio1Inputs[2];
 
 void xioOutputWrite()
 {
@@ -315,8 +356,6 @@ void xioInputRead()
 	}
 }
 
-
-
 void SetTurnout(uint8_t controlPoint, uint8_t points)
 {
 	if (POINTS_UNAFFECTED == points)
@@ -354,11 +393,6 @@ void SetTurnout(uint8_t controlPoint, uint8_t points)
 			}
 			break;
 	}
-
-
-	
-
-
 }
 
 uint8_t GetClearance(uint8_t controlPoint)
@@ -385,10 +419,30 @@ void SetClearance(uint8_t controlPoint, uint8_t newClear)
 	switch(controlPoint)
 	{
 		case E_CONTROLPOINT:
+			if (CLEARANCE_NONE != newClear)
+			{
+				if (XOCC_E_TUMBLE & ext_occupancy)
+					break;
+				if (OCC_E_OS_SECT & occupancy)
+					break;
+
+				// FIXME: logic to prevent the CTC ends lining into each other
+			}
 			clearance &= 0xF0;
 			clearance |= newClear;
 			break;
+
 		case W_CONTROLPOINT:
+			if (CLEARANCE_NONE != newClear)
+			{
+				if (XOCC_W_TUMBLE & ext_occupancy)
+					break;
+				if (OCC_W_OS_SECT & occupancy)
+					break;	
+
+				// FIXME: logic to prevent the CTC ends lining into each other
+			}
+			
 			clearance &= 0x0F;
 			clearance |= newClear<<4;
 			break;
@@ -765,11 +819,12 @@ int main(void)
 			changed = 1;
 
 		if (changed)
+		{
 			if (decisecs > update_decisecs)
 				decisecs -= update_decisecs;
 			else
 				decisecs = 0;
-
+		}
 		/* If we need to send a packet and we're not already busy... */
 
 /*
@@ -1056,7 +1111,7 @@ void PktHandler(void)
 
 
 	/*************** NOT A PACKET WE EXPLICITLY UNDERSTAND, TRY BIT/BYTE RULES ***************/
-	for (i=0; i<6; i++)
+	for (i=0; i<8; i++)
 	{
 		uint8_t byte, bitset=0;
 		
@@ -1077,19 +1132,6 @@ void PktHandler(void)
 		*/
 		byte = eeprom_read_byte((uint8_t*)(i+EE_E_APRCH_BITBYTE));
 		bitset = mrbus_rx_buffer[(byte & 0x1F)] & (1<<((byte>>5) & 0x07));
-
-		/* 
-		#define E_ADJOIN			0x80
-		#define E_APPROACH		0x40
-
-		#define W_ADJOIN			0x20
-		#define W_APPROACH		0x10
-		#define CTC_MAIN			0x08
-		#define CTC_SIDING		0x04
-		#define E_OS_SECT			0x02
-
-		#define W_OS_SECT			0x01
-		*/
 
 		switch(i + EE_E_APRCH_ADDR)
 		{
@@ -1134,6 +1176,22 @@ void PktHandler(void)
 				else
 					ext_occupancy &= ~(XOCC_W_ADJOIN);
 				break;
+
+			case EE_W_TUMBLE_ADDR:
+				if (bitset)
+					ext_occupancy |= XOCC_W_TUMBLE;
+				else
+					ext_occupancy &= ~(XOCC_W_TUMBLE);
+				break;
+
+			case EE_E_TUMBLE_ADDR:
+				if (bitset)
+					ext_occupancy |= XOCC_E_TUMBLE;
+				else
+					ext_occupancy &= ~(XOCC_E_TUMBLE);
+				break;
+
+
 		}
 	}
 	//*************** END PACKET HANDLER  ***************
