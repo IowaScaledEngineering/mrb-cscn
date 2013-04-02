@@ -29,6 +29,8 @@ LICENSE:
 #include "mrbus.h"
 #include "avr-i2c-master.h"
 
+void PktHandler(void);
+
 extern uint8_t mrbus_activity;
 extern uint8_t mrbus_rx_buffer[MRBUS_BUFFER_SIZE];
 extern uint8_t mrbus_tx_buffer[MRBUS_BUFFER_SIZE];
@@ -38,9 +40,9 @@ uint8_t mrbus_dev_addr = 0;
 uint8_t pkt_count = 0;
 volatile uint8_t events = 0;
 
-#define EVENT_READ_HS_INPUTS  0x01
-#define EVENT_READ_LS_INPUTS  0x02
-#define EVENT_WRITE_OUTPUTS   0x04
+#define EVENT_READ_INPUTS  0x01
+#define EVENT_WRITE_OUTPUTS   0x02
+#define EVENT_BLINKY       0x80
 
 #define E_CONTROLPOINT  0x01
 #define W_CONTROLPOINT  0x02
@@ -105,7 +107,30 @@ volatile uint8_t events = 0;
 #define EE_W_ADJ_SUBTYPE      0x45
 
 
+uint8_t debounced_inputs[2], old_debounced_inputs[2];
+uint8_t clearance, old_clearance;
+uint8_t occupancy, old_occupancy;
+uint8_t ext_occupancy, old_ext_occupancy;
+uint8_t clock_a[2] = {0,0}, clock_b[2] = {0,0};
+uint8_t signalHeads[8], old_signalHeads[8];
 
+#define ASPECT_LUNAR     0x07
+#define ASPECT_FL_RED    0x06
+#define ASPECT_FL_GREEN  0x05
+#define ASPECT_RED       0x04
+#define ASPECT_FL_YELLOW 0x03
+#define ASPECT_YELLOW    0x02
+#define ASPECT_GREEN     0x01
+#define ASPECT_OFF       0x00
+
+#define SIG_E_PNTS_UPPER 0
+#define SIG_E_PNTS_LOWER 1
+#define SIG_E_MAIN       2
+#define SIG_E_SIDING     3
+#define SIG_W_PNTS_UPPER 4
+#define SIG_W_PNTS_LOWER 5
+#define SIG_W_MAIN       6
+#define SIG_W_SIDING     7
 
 // ******** Start 100 Hz Timer, 0.16% error version (Timer 0)
 // If you can live with a slightly less accurate timer, this one only uses Timer 0, leaving Timer 1 open
@@ -118,8 +143,10 @@ volatile uint8_t events = 0;
 // and the call to this function in the main function
 
 uint8_t ticks;
+uint8_t event;
 uint16_t decisecs=0;
 uint16_t update_decisecs=10;
+uint8_t blinkyCounter = 0;
 
 void initialize100HzTimer(void)
 {
@@ -135,14 +162,453 @@ void initialize100HzTimer(void)
 
 ISR(TIMER0_COMPA_vect)
 {
+	if (ticks & 0x01)
+		events |= EVENT_READ_INPUTS;
+
 	if (++ticks >= 10)
 	{
 		ticks = 0;
 		decisecs++;
+
+		if (++blinkyCounter > 5)
+		{
+			event ^= EVENT_BLINKY;
+			blinkyCounter = 0;
+		}
+
+		events |= EVENT_WRITE_OUTPUTS;
 	}
 }
 
 // End of 100Hz timer
+
+/* 0x00-0x04 - input registers */
+/* 0x08-0x0C - output registers */
+/* 0x18-0x1C - direction registers - 0 is output, 1 is input */
+
+#define I2C_RESET         0
+#define I2C_OUTPUT_ENABLE 1
+#define I2C_IRQ           2
+
+
+#define I2C_XIO1_ADDRESS 0x4E
+
+void xioInitialize()
+{
+	uint8_t i2cBuf[8];
+
+//	DDRB |= _BV(I2C_RESET) | _BV(I2C_OUTPUT_ENABLE);
+//	PORTB &= ~(_BV(I2C_OUTPUT_ENABLE));
+//	PORTB |= _BV(I2C_RESET);
+
+	DDRB = 0x03;
+	PORTB = 0x01;
+
+	i2cBuf[0] = I2C_XIO1_ADDRESS;
+	i2cBuf[1] = 0x80 | 0x18;  // 0x80 is auto-increment
+	i2cBuf[2] = 0;
+	i2cBuf[3] = 0;
+	i2cBuf[4] = 0;
+	i2cBuf[5] = 0xC0;
+	i2cBuf[6] = 0xFF;
+	i2c_transmit(i2cBuf, 7, 1);
+	while(i2c_busy());
+}
+
+
+void init(void)
+{
+	uint8_t i;
+	// FIXME:  Do any initialization you need to do here.
+	
+	// Clear watchdog (in the case of an 'X' packet reset)
+	MCUSR = 0;
+	wdt_reset();
+	wdt_disable();
+
+	pkt_count = 0;
+
+	// Initialize MRBus address from EEPROM address 1
+	mrbus_dev_addr = eeprom_read_byte((uint8_t*)MRBUS_EE_DEVICE_ADDR);
+	mrbus_dev_addr = 0x20;
+	
+	// Initialize signals and such
+	for(i=0; i<sizeof(debounced_inputs); i++)
+		debounced_inputs[i] = old_debounced_inputs[i] = 0;
+	
+	for(i=0; i<sizeof(signalHeads); i++)
+		signalHeads[i] = old_signalHeads[i] = ASPECT_RED;
+
+	clearance = old_clearance = 0;
+	occupancy = old_occupancy = 0;
+	ext_occupancy = old_ext_occupancy = 0;
+
+}
+
+uint8_t xio1Outputs[4];
+uint8_t xio1Inputs[2];
+
+void xioOutputWrite()
+{
+	uint8_t i2cBuf[8];
+	uint8_t i;
+	i2cBuf[0] = I2C_XIO1_ADDRESS;
+	i2cBuf[1] = 0x80 | 0x08;  // 0x80 is auto-increment
+	for(i=0; i<sizeof(xio1Outputs); i++)
+		i2cBuf[2+i] = xio1Outputs[i];
+
+	i2c_transmit(i2cBuf, 2+sizeof(xio1Outputs), 1);
+}
+
+void xioInputRead()
+{
+	uint8_t i2cBuf[4];
+	i2cBuf[0] = I2C_XIO1_ADDRESS;
+	i2cBuf[1] = 0x80 | 0x03;  // 0x80 is auto-increment, 0x03 is the first register with inputs
+	i2c_transmit(i2cBuf, 2, 0);
+	
+	i2cBuf[0] = I2C_XIO1_ADDRESS | 0x01;
+	i2c_transmit(i2cBuf, 3, 1);
+	while(i2c_busy());
+	i2c_receive(i2cBuf, 3);
+	xio1Inputs[0] = i2cBuf[1];
+	xio1Inputs[1] = i2cBuf[2];	
+}
+
+void SetTurnout(uint8_t controlPoint, uint8_t points)
+{
+	if (POINTS_UNAFFECTED == points)
+		return;
+		
+	switch(controlPoint)
+	{
+		case E_CONTROLPOINT:
+			if (POINTS_REVERSE_FORCE == points || (POINTS_REVERSE_SAFE == points && !(occupancy & OCC_E_OS_SECT)))
+				xio1Outputs[3] |= E_PNTS_CNTL;
+			else if (POINTS_MAIN_FORCE == points || (POINTS_MAIN_SAFE == points && !(occupancy & OCC_E_OS_SECT)))
+				xio1Outputs[3] &= ~(E_PNTS_CNTL);
+			break;
+
+		case W_CONTROLPOINT:
+			if (POINTS_REVERSE_FORCE == points || (POINTS_REVERSE_SAFE == points && !(occupancy & OCC_W_OS_SECT)))
+				xio1Outputs[3] |= W_PNTS_CNTL;
+			else if (POINTS_MAIN_FORCE == points || (POINTS_MAIN_SAFE == points && !(occupancy & OCC_W_OS_SECT)))
+				xio1Outputs[3] &= ~(W_PNTS_CNTL);
+			break;
+	}
+}
+
+void SetClearance(uint8_t controlPoint, uint8_t newClear)
+{
+	if (CLEARANCE_NONE != newClear 
+		&& CLEARANCE_EAST  != newClear 
+		&& CLEARANCE_WEST != newClear)
+		return;
+
+	switch(controlPoint)
+	{
+		case E_CONTROLPOINT:
+			clearance &= 0xF0;
+			clearance |= newClear;
+			break;
+		case W_CONTROLPOINT:
+			clearance &= 0x0F;
+			clearance |= newClear<<4;
+			break;
+	}
+}
+
+void CodeCTCRoute(uint8_t controlPoint, uint8_t newClear, uint8_t newPoints)
+{
+	SetClearance(controlPoint, newClear);
+	SetTurnout(controlPoint, newPoints);						
+}
+
+
+// SignalsToOutputs is responsible for converting the signal head aspects in the
+// signalHeads[] array to the physical wires on the XIO.
+// Thus, it's hardware configuration dependent.
+
+/* ASPECT_LUNAR     0x07
+ ASPECT_FL_RED    0x06
+ ASPECT_FL_GREEN  0x05
+ ASPECT_RED       0x04
+ ASPECT_FL_YELLOW 0x03
+ ASPECT_YELLOW    0x02
+ ASPECT_GREEN     0x01
+ ASPECT_OFF       0x00 */
+
+typedef struct
+{
+	const uint8_t signalHead;
+	const uint8_t redByte;
+	const uint8_t redMask;
+	const uint8_t greenByte;
+	const uint8_t greenMask;
+} SignalPinDefinition;
+
+const SignalPinDefinition sigPinDefs[8] = 
+{
+	{SIG_W_PNTS_UPPER, 0, _BV(0), 0, _BV(2)},
+	{SIG_W_PNTS_LOWER, 0, _BV(3), 0, _BV(5)},
+	{SIG_W_MAIN      , 0, _BV(6), 1, _BV(0)},
+	{SIG_W_SIDING    , 1, _BV(1), 1, _BV(3)},
+	{SIG_E_PNTS_UPPER, 1, _BV(4), 1, _BV(6)},
+	{SIG_E_PNTS_LOWER, 1, _BV(7), 2, _BV(1)},
+	{SIG_E_MAIN      , 2, _BV(2), 2, _BV(4)},
+	{SIG_E_SIDING    , 2, _BV(5), 2, _BV(7)}
+};
+
+
+void signal3WSearchlightToXIO(uint8_t aspect, uint8_t sigDefIdx)
+{
+	uint8_t redByte = sigPinDefs[sigDefIdx].redByte;
+	uint8_t redMask = sigPinDefs[sigDefIdx].redMask;
+	uint8_t greenByte = sigPinDefs[sigDefIdx].greenByte;
+	uint8_t greenMask = sigPinDefs[sigDefIdx].greenMask;
+
+	xio1Outputs[redByte] &= ~(redMask);
+	xio1Outputs[greenByte] &= ~(greenMask);
+
+	switch(aspect)
+	{
+		case ASPECT_OFF:
+			break;
+		
+		case ASPECT_GREEN:
+			xio1Outputs[greenByte] |= greenMask;
+			break;
+		
+		case ASPECT_FL_GREEN:
+			if (event & EVENT_BLINKY)
+				xio1Outputs[greenByte] |= greenMask;
+			break;
+
+		case ASPECT_YELLOW:
+			xio1Outputs[redByte] |= redMask;
+			xio1Outputs[greenByte] |= greenMask;		
+			break;
+		
+		case ASPECT_FL_YELLOW:
+			if (event & EVENT_BLINKY)
+			{
+				xio1Outputs[redByte] |= redMask;
+				xio1Outputs[greenByte] |= greenMask;
+			}
+			break;
+		
+		
+		case ASPECT_RED:
+		case ASPECT_LUNAR: // Can't display, so make like red
+		default:
+			xio1Outputs[redByte] |= redMask;			
+			break;
+
+		case ASPECT_FL_RED:
+			if (event & EVENT_BLINKY)
+				xio1Outputs[redByte] |= redMask;
+			break;
+
+	}
+
+}
+
+
+void SignalsToOutputs()
+{
+	uint8_t sigDefIdx;
+	for(sigDefIdx=0; sigDefIdx<sizeof(sigPinDefs)/sizeof(SignalPinDefinition); sigDefIdx++)
+	{
+		signal3WSearchlightToXIO(signalHeads[sigPinDefs[sigDefIdx].signalHead], sigDefIdx);
+	}
+}
+
+int main(void)
+{
+	uint8_t changed = 0;
+	uint8_t i;
+	// Application initialization
+	init();
+
+	// Initialize a 100 Hz timer.  See the definition for this function - you can
+	// remove it if you don't use it.
+	initialize100HzTimer();
+
+	// Initialize MRBus core
+	mrbusInit();
+
+	sei();	
+	i2c_master_init();
+	xioInitialize();
+
+
+	signalHeads[0] = ASPECT_FL_YELLOW;
+	signalHeads[1] = ASPECT_GREEN;
+	while (1)
+	{
+		wdt_reset();
+		// Handle any packets that may have come in
+		if (mrbus_state & MRBUS_RX_PKT_READY)
+			PktHandler();
+
+		if(events & (EVENT_READ_INPUTS))
+		{
+			uint8_t delta;
+			xioInputRead();
+			for(i=0; i<2; i++)
+			{
+				// Vertical counter debounce courtesy 
+				delta = xio1Inputs[i] ^ debounced_inputs[i];
+				clock_a[i] ^= clock_b[i];
+				clock_b[i]  = ~(clock_b[i]);
+				clock_a[i] &= delta;
+				clock_b[i] &= delta;
+				debounced_inputs[i] ^= ~(~delta | clock_a[i] | clock_b[i]);
+			}
+			events &= ~(EVENT_READ_INPUTS);
+		}			
+
+		// Control Point Logic
+
+		// Manual Control Logic
+		if (1) // FIXME: add provision for LC lockout
+		{
+			uint8_t delta = (debounced_inputs[1] ^ old_debounced_inputs[1]) & (E_PNTS_BTTN_NORMAL | E_PNTS_BTTN_REVERSE);
+			delta &= old_debounced_inputs[1];
+			
+			// Any bit in delta that's a 1 now corresponds to a switch going low in this cycle
+			if (delta & E_PNTS_BTTN_NORMAL)
+				CodeCTCRoute(E_CONTROLPOINT, POINTS_MAIN_FORCE, CLEARANCE_NONE);
+			else if (delta & E_PNTS_BTTN_REVERSE)
+				CodeCTCRoute(E_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
+				
+			if (delta & W_PNTS_BTTN_NORMAL)
+				CodeCTCRoute(W_CONTROLPOINT, POINTS_MAIN_FORCE, CLEARANCE_NONE);
+			else if (delta & W_PNTS_BTTN_REVERSE)
+				CodeCTCRoute(W_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
+		}
+
+		// Get the physical occupancy inputs from debounced
+		occupancy &= 0xF0;
+		occupancy |= 0x0F & (debounced_inputs[1]>>4);
+
+		if (occupancy & OCC_E_OS_SECT)
+			SetClearance(E_CONTROLPOINT, CLEARANCE_NONE);
+
+		if (occupancy & OCC_W_OS_SECT)
+			SetClearance(W_CONTROLPOINT, CLEARANCE_NONE);
+
+
+		// Calculate signal aspects
+//		east_os_section_signals();
+//		west_os_section_signals();
+		
+		// Vital Logic
+
+
+
+		// Send output
+		if (events & EVENT_WRITE_OUTPUTS)
+		{
+			SignalsToOutputs();
+			xioOutputWrite();
+			events &= ~(EVENT_WRITE_OUTPUTS);
+		}
+
+
+		// Test if something changed from the last time
+		// around the loop - we need to send an update 
+		//   packet if it did 
+/*		   
+		if ((old_e_pnts_usig != e_pnts_usig) ||
+		(old_e_pnts_lsig != e_pnts_lsig) ||
+		(old_e_main_sig != e_main_sig) ||
+		(old_e_side_sig != e_side_sig) ||
+		(old_w_pnts_usig != w_pnts_usig) ||
+		(old_w_pnts_lsig != w_pnts_lsig) ||
+		(old_w_main_sig != w_main_sig) ||
+		(old_w_side_sig != w_side_sig) ||
+		(old_occupancy != occupancy) ||
+		(old_ext_occupancy != ext_occupancy) ||
+		(old_turnouts != turnouts) ||
+		(old_clearance != clearance))
+		{
+			// Something Changed - time to update
+			old_e_pnts_usig = e_pnts_usig;
+			old_e_pnts_lsig = e_pnts_lsig;
+			old_e_main_sig = e_main_sig;
+			old_e_side_sig = e_side_sig;
+			old_w_pnts_usig = w_pnts_usig;
+			old_w_pnts_lsig = w_pnts_lsig;
+			old_w_main_sig = w_main_sig;
+			old_w_side_sig = w_side_sig;
+			old_occupancy = occupancy;
+			old_ext_occupancy = ext_occupancy;
+			old_clearance = clearance;
+			old_turnouts = turnouts;
+			
+			// Set changed such that a packet gets sent
+			changed = 1;
+		}
+		else*/ if (decisecs >= update_decisecs)
+			changed = 1;
+
+		if (changed)
+			decisecs = 0;
+
+		/* If we need to send a packet and we're not already busy... */
+		if (changed && !(mrbus_state & (MRBUS_TX_BUF_ACTIVE | MRBUS_TX_PKT_READY)))
+		{
+			mrbus_tx_buffer[MRBUS_PKT_SRC] = mrbus_dev_addr;
+			mrbus_tx_buffer[MRBUS_PKT_DEST] = 0xFF;
+			mrbus_tx_buffer[MRBUS_PKT_LEN] = 7;			
+			mrbus_tx_buffer[5] = 'S';
+			mrbus_tx_buffer[6] = 0x00;
+			mrbus_tx_buffer[7] = 0x00;
+			mrbus_state |= MRBUS_TX_PKT_READY;
+			changed = 0;
+		}
+
+
+		// If we have a packet to be transmitted, try to send it here
+		while(mrbus_state & MRBUS_TX_PKT_READY)
+		{
+			uint8_t bus_countdown;
+
+			// Even while we're sitting here trying to transmit, keep handling
+			// any packets we're receiving so that we keep up with the current state of the
+			// bus.  Obviously things that request a response cannot go, since the transmit
+			// buffer is full.
+			if (mrbus_state & MRBUS_RX_PKT_READY)
+				PktHandler();
+
+
+			if (0 == mrbusPacketTransmit())
+			{
+				mrbus_state &= ~(MRBUS_TX_PKT_READY);
+				break;
+			}
+
+			// If we're here, we failed to start transmission due to somebody else transmitting
+			// Given that our transmit buffer is full, priority one should be getting that data onto
+			// the bus so we can start using our tx buffer again.  So we stay in the while loop, trying
+			// to get bus time.
+
+			// We want to wait 20ms before we try a retransmit
+			// Because MRBus has a minimum packet size of 6 bytes @ 57.6kbps,
+			// need to check roughly every millisecond to see if we have a new packet
+			// so that we don't miss things we're receiving while waiting to transmit
+			bus_countdown = 20;
+			while (bus_countdown-- > 0 && MRBUS_ACTIVITY_RX_COMPLETE != mrbus_activity)
+			{
+				//clrwdt();
+				_delay_ms(1);
+				if (mrbus_state & MRBUS_RX_PKT_READY) 
+					PktHandler();
+			}
+		}
+	}
+}
 
 void PktHandler(void)
 {
@@ -280,13 +746,13 @@ void PktHandler(void)
 	{
 		uint8_t byte, bitset=0;
 		
-		if (mrbus_rx_buffer[MRBUS_PKT_SRC] != eeprom_read_byte((uint8_t*)i+EE_E_APRCH_ADDR))
+		if (mrbus_rx_buffer[MRBUS_PKT_SRC] != eeprom_read_byte((uint8_t*)(i+EE_E_APRCH_ADDR)))
 			continue;
 
-		if (mrbus_rx_buffer[MRBUS_PKT_TYPE] != eeprom_read_byte((uint8_t*)i+EE_E_APRCH_PKT))
+		if (mrbus_rx_buffer[MRBUS_PKT_TYPE] != eeprom_read_byte((uint8_t*)(i+EE_E_APRCH_PKT)))
 			continue;
 		
-		byte = eeprom_read_byte((uint8_t*)i+EE_E_APRCH_SUBTYPE);
+		byte = eeprom_read_byte((uint8_t*)(i+EE_E_APRCH_SUBTYPE));
 		if ((0xFF != byte) && (mrbus_rx_buffer[MRBUS_PKT_SUBTYPE] != byte))
 			continue;
 
@@ -295,17 +761,19 @@ void PktHandler(void)
 			y = byte = byte in data stream (6 is first data byte)
 			xxxyyyy
 		*/
-		byte = eeprom_read_byte((uint8_t*)i+EE_E_APRCH_BITBYTE);
+		byte = eeprom_read_byte((uint8_t*)(i+EE_E_APRCH_BITBYTE));
 		bitset = mrbus_rx_buffer[(byte & 0x1F)] & (1<<((byte>>5) & 0x07));
 
 		/* 
 		#define E_ADJOIN			0x80
 		#define E_APPROACH		0x40
+
 		#define W_ADJOIN			0x20
 		#define W_APPROACH		0x10
 		#define CTC_MAIN			0x08
 		#define CTC_SIDING		0x04
 		#define E_OS_SECT			0x02
+
 		#define W_OS_SECT			0x01
 		*/
 
@@ -325,7 +793,7 @@ void PktHandler(void)
 					ext_occupancy &= ~(XOCC_E_APPROACH2);
 				break;
 				
-			case EE_E_ADJ_ADDR
+			case EE_E_ADJ_ADDR:
 				if (bitset)
 					ext_occupancy |= XOCC_E_ADJOIN;
 				else
@@ -346,7 +814,7 @@ void PktHandler(void)
 					ext_occupancy &= ~(XOCC_W_APPROACH2);
 				break;
 				
-			case EE_W_ADJ_ADDR
+			case EE_W_ADJ_ADDR:
 				if (bitset)
 					ext_occupancy |= XOCC_W_ADJOIN;
 				else
@@ -368,334 +836,5 @@ PktIgnore:
 	mrbus_state &= (~MRBUS_RX_PKT_READY);
 	return;	
 }
-
-/* 0x00-0x04 - input registers */
-/* 0x08-0x0C - output registers */
-/* 0x18-0x1C - direction registers - 0 is output, 1 is input */
-
-#define I2C_RESET         0
-#define I2C_OUTPUT_ENABLE 1
-#define I2C_IRQ           2
-
-
-#define I2C_XIO1_ADDRESS 0x40
-
-void xioInitialize()
-{
-	uint8_t i2cBuf[8];
-
-//	DDRB |= _BV(I2C_RESET) | _BV(I2C_OUTPUT_ENABLE);
-//	PORTB &= ~(_BV(I2C_OUTPUT_ENABLE));
-//	PORTB |= _BV(I2C_RESET);
-
-	DDRB = 0x03;
-	PORTB = 0x01;
-
-	i2cBuf[0] = I2C_XIO1_ADDRESS;
-	i2cBuf[1] = 0x80 | 0x18;  // 0x80 is auto-increment
-	i2cBuf[2] = 0;
-	i2cBuf[3] = 0;
-	i2cBuf[4] = 0;
-	i2cBuf[5] = 0xC0;
-	i2cBuf[6] = 0xFF;
-	i2c_transmit(i2cBuf, 7, 1);
-	while(i2c_busy());
-}
-
-
-void init(void)
-{
-	// FIXME:  Do any initialization you need to do here.
-	
-	// Clear watchdog (in the case of an 'X' packet reset)
-	MCUSR = 0;
-	wdt_reset();
-	wdt_disable();
-
-	pkt_count = 0;
-
-	// Initialize MRBus address from EEPROM address 1
-	mrbus_dev_addr = eeprom_read_byte((uint8_t*)MRBUS_EE_DEVICE_ADDR);
-	mrbus_dev_addr = 0x20;
-}
-
-uint8_t xio1Outputs[4];
-uint8_t xio1Inputs[2];
-
-void xioOutputWrite()
-{
-	uint8_t i2cBuf[8];
-	uint8_t i;
-	i2cBuf[0] = I2C_XIO1_ADDRESS;
-	i2cBuf[1] = 0x80 | 0x08;  // 0x80 is auto-increment
-	for(i=0; i<sizeof(xio1Outputs); i++)
-		i2cBuf[2+i] = xio1Outputs[i];
-
-	i2c_transmit(i2cBuf, 2+sizeof(xio1Outputs), 1);
-}
-
-void xioInputRead()
-{
-	uint8_t i2cBuf[8];
-	uint8_t i;
-	i2cBuf[0] = I2C_XIO1_ADDRESS;
-	i2cBuf[1] = 0x80 | 0x03;  // 0x80 is auto-increment, 0x03 is the first register with inputs
-	i2c_transmit(i2cBuf, 2, 0);
-	
-	i2cBuf[0] = I2C_XIO1_ADDRESS | 0x01;
-	i2c_transmit(i2cBuf, 3, 1);
-	while(i2c_busy());
-	i2c_receive(i2cBuf, 3);
-	xio1Inputs[0] = i2cBuf[1];
-	xio1Inputs[1] = i2cBuf[2];	
-}
-
-uint8_t debounced_inputs[2] = {0,0}, old_debounced_inputs[2] = {0,0};
-uint8_t clearance=0, old_clearance=0;
-uint8_t occupancy=0, old_occupancy=0;
-uint8_t ext_occupancy=0, old_ext_occupancy=0;
-uint8_t clock_a[2] = {0,0}, clock_b[2] = {0,0};
-
-void SetTurnout(uint8_t controlPoint, uint8_t points)
-{
-	if (POINTS_UNAFFECTED == points)
-		return;
-		
-	switch(controlPoint)
-	{
-		case E_CONTROLPOINT:
-			if (POINTS_REVERSE_FORCE == points || (POINTS_REVERSE_SAFE == points && !(occupancy & E_OS_SECT)))
-				xio1Output[3] |= E_PNTS_CNTL;
-			else if (POINTS_MAIN_FORCE == points || (POINTS_MAIN_SAFE == points && !(occupancy & E_OS_SECT)))
-				xio1Output[3] &= ~(E_PNTS_CNTL);
-			break;
-
-		case W_CONTROLPOINT:
-			if (POINTS_REVERSE_FORCE == points || (POINTS_REVERSE_SAFE == points && !(occupancy & W_OS_SECT)))
-				xio1Output[3] |= W_PNTS_CNTL;
-			else if (POINTS_MAIN_FORCE == points || (POINTS_MAIN_SAFE == points && !(occupancy & W_OS_SECT)))
-				xio1Output[3] &= ~(W_PNTS_CNTL);
-			break;
-	}
-}
-
-void SetClearance(uint8_t controlPoint, uint8_t newClear)
-{
-	if (CLEARANCE_NONE != newClear 
-		&& CLEARANCE_EAST  != newClear 
-		&& CLEARANCE_WEST != newClear)
-		return;
-
-	switch(controlPoint)
-	{
-		case E_CONTROLPOINT:
-			clearance &= 0xF0;
-			clearance |= newClear;
-			break;
-		case W_CONTROLPOINT:
-			clearance &= 0x0F;
-			clearance |= newClear<<4;
-			break;
-	}
-}
-
-void CodeCTCRoute(uint8_t controlPoint, uint8_t newClear, uint8_t newPoints)
-{
-	SetClearance(controlPoint, newClear);
-	SetTurnout(controlPoint, newPoints);						
-}
-
-
-
-void signalsToOuputs()
-{
-
-
-
-}
-
-int main(void)
-{
-	uint8_t changed = 0;
-	uint8_t i;
-	// Application initialization
-	init();
-
-	// Initialize a 100 Hz timer.  See the definition for this function - you can
-	// remove it if you don't use it.
-	initialize100HzTimer();
-
-	// Initialize MRBus core
-	mrbusInit();
-
-	sei();	
-	i2c_master_init();
-	xioInitialize();
-
-	while (1)
-	{
-		wdt_reset();
-		// Handle any packets that may have come in
-		if (mrbus_state & MRBUS_RX_PKT_READY)
-			PktHandler();
-
-		if(events & (EVENT_READ_INPUTS))
-		{
-			uint8_t delta;
-			xioInputRead();
-			for(i=0; i<2; i++)
-			{
-				// Vertical counter debounce courtesy 
-				delta = xio1Inputs[i] ^ debounced_inputs[i];
-				clock_a[i] ^= clock_b[i];
-				clock_b[i]  = ~(clock_b[i]);
-				clock_a[i] &= delta;
-				clock_b[i] &= delta;
-				debounced_inputs[i] ^= ~(~delta | clock_a[i] | clock_b[i]);
-			}
-		}			
-
-		// Control Point Logic
-
-		// Manual Control Logic
-		if (1) // FIXME: add provision for LC lockout
-		{
-			uint8_t delta = (debounced_inputs[1] ^ old_debounced_inputs[1]) & (E_PNTS_BTTN_NORMAL | E_PNTS_BTTN_REVERSE);
-			delta &= old_debounced_inputs[1];
-			
-			// Any bit in delta that's a 1 now corresponds to a switch going low in this cycle
-			if (delta & E_PNTS_BTTN_NORMAL)
-				CodeCTCRoute(E_CONTROLPOINT, POINTS_MAIN_FORCE, CLEARANCE_NONE);
-			else if (delta & E_PNTS_BUTTON_REVERSE)
-				CodeCTCRoute(E_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
-				
-			if (delta & W_PNTS_BTTN_NORMAL)
-				CodeCTCRoute(W_CONTROLPOINT, POINTS_MAIN_FORCE, CLEARANCE_NONE);
-			else if (delta & W_PNTS_BUTTON_REVERSE)
-				CodeCTCRoute(W_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
-		}
-
-		// Get the physical occupancy inputs from debounced
-		occupancy &= 0xF0;
-		occupancy |= 0x0F & (debounced_inputs[1]>>4);
-
-		if (occupancy & OCC_E_OS_SECT)
-			setClearance(E_CONTROLPOINT, CLEAR_NONE);
-
-		if (occupancy & OCC_W_OS_SECT)
-			setClearance(W_CONTROLPOINT, CLEAR_NONE);
-
-
-		// Calculate signal aspects
-		east_os_section_signals();
-		west_os_section_signals();
-		
-		// Vital Logic
-
-
-
-		// Send output
-		if (events & EVENT_WRITE_OUTPUTS)
-		{
-			signalsToOutputs();
-			xioOutputWrite();
-			events &= ~(EVENT_WRITE_OUTPUTS);
-		}
-
-
-		// Test if something changed from the last time
-		// around the loop - we need to send an update 
-		//   packet if it did 
-		   
-		if ((old_e_pnts_usig != e_pnts_usig) ||
-		(old_e_pnts_lsig != e_pnts_lsig) ||
-		(old_e_main_sig != e_main_sig) ||
-		(old_e_side_sig != e_side_sig) ||
-		(old_w_pnts_usig != w_pnts_usig) ||
-		(old_w_pnts_lsig != w_pnts_lsig) ||
-		(old_w_main_sig != w_main_sig) ||
-		(old_w_side_sig != w_side_sig) ||
-		(old_occupancy != occupancy) ||
-		(old_ext_occupancy != ext_occupancy) ||
-		(old_turnouts != turnouts) ||
-		(old_clearance != clearance))
-		{
-			/* Something Changed - time to update */
-			old_e_pnts_usig = e_pnts_usig;
-			old_e_pnts_lsig = e_pnts_lsig;
-			old_e_main_sig = e_main_sig;
-			old_e_side_sig = e_side_sig;
-			old_w_pnts_usig = w_pnts_usig;
-			old_w_pnts_lsig = w_pnts_lsig;
-			old_w_main_sig = w_main_sig;
-			old_w_side_sig = w_side_sig;
-			old_occupancy = occupancy;
-			old_ext_occupancy = ext_occupancy;
-			old_clearance = clearance;
-			old_turnouts = turnouts;
-			
-			/* Set changed such that a packet gets sent */
-			changed = 1;
-		}
-		else if (decisecs >= update_decisecs)
-			changed = 1;
-
-		if (changed)
-			decisecs = 0;
-
-		/* If we need to send a packet and we're not already busy... */
-		if (changed && !(mrbus_state & (MRBUS_TX_BUF_ACTIVE | MRBUS_TX_PKT_READY)))
-		{
-			mrbus_tx_buffer[MRBUS_PKT_SRC] = mrbus_dev_addr;
-			mrbus_tx_buffer[MRBUS_PKT_DEST] = 0xFF;
-			mrbus_tx_buffer[MRBUS_PKT_LEN] = 7;			
-			mrbus_tx_buffer[5] = 'S';
-			mrbus_tx_buffer[6] = 0x00;
-			mrbus_tx_buffer[7] = 0x00;
-			mrbus_state |= MRBUS_TX_PKT_READY;
-			changed = 0;
-		}
-
-
-		// If we have a packet to be transmitted, try to send it here
-		while(mrbus_state & MRBUS_TX_PKT_READY)
-		{
-			uint8_t bus_countdown;
-
-			// Even while we're sitting here trying to transmit, keep handling
-			// any packets we're receiving so that we keep up with the current state of the
-			// bus.  Obviously things that request a response cannot go, since the transmit
-			// buffer is full.
-			if (mrbus_state & MRBUS_RX_PKT_READY)
-				PktHandler();
-
-
-			if (0 == mrbusPacketTransmit())
-			{
-				mrbus_state &= ~(MRBUS_TX_PKT_READY);
-				break;
-			}
-
-			// If we're here, we failed to start transmission due to somebody else transmitting
-			// Given that our transmit buffer is full, priority one should be getting that data onto
-			// the bus so we can start using our tx buffer again.  So we stay in the while loop, trying
-			// to get bus time.
-
-			// We want to wait 20ms before we try a retransmit
-			// Because MRBus has a minimum packet size of 6 bytes @ 57.6kbps,
-			// need to check roughly every millisecond to see if we have a new packet
-			// so that we don't miss things we're receiving while waiting to transmit
-			bus_countdown = 20;
-			while (bus_countdown-- > 0 && MRBUS_ACTIVITY_RX_COMPLETE != mrbus_activity)
-			{
-				//clrwdt();
-				_delay_ms(1);
-				if (mrbus_state & MRBUS_RX_PKT_READY) 
-					PktHandler();
-			}
-		}
-	}
-}
-
 
 
