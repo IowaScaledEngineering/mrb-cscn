@@ -40,9 +40,12 @@ uint8_t mrbus_dev_addr = 0;
 uint8_t pkt_count = 0;
 volatile uint8_t events = 0;
 
-#define EVENT_READ_INPUTS  0x01
-#define EVENT_WRITE_OUTPUTS   0x02
-#define EVENT_BLINKY       0x80
+uint8_t deltaSave=0;
+
+#define EVENT_READ_INPUTS    0x01
+#define EVENT_WRITE_OUTPUTS  0x02
+#define EVENT_I2C_ERROR      0x40
+#define EVENT_BLINKY         0x80
 
 #define E_CONTROLPOINT  0x01
 #define W_CONTROLPOINT  0x02
@@ -51,9 +54,9 @@ volatile uint8_t events = 0;
 #define CLEARANCE_EAST		0x01
 #define CLEARANCE_WEST		0x02
 
-#define POINTS_MAIN_SAFE      'M'
+#define POINTS_NORMAL_SAFE    'M'
 #define POINTS_REVERSE_SAFE   'D'
-#define POINTS_MAIN_FORCE     'm'
+#define POINTS_NORMAL_FORCE   'm'
 #define POINTS_REVERSE_FORCE  'd'
 #define POINTS_UNAFFECTED     'X'
 
@@ -143,10 +146,10 @@ uint8_t signalHeads[8], old_signalHeads[8];
 // and the call to this function in the main function
 
 uint8_t ticks;
-uint8_t event;
 uint16_t decisecs=0;
 uint16_t update_decisecs=10;
 uint8_t blinkyCounter = 0;
+volatile uint8_t buttonLockout=5;
 
 void initialize100HzTimer(void)
 {
@@ -172,9 +175,12 @@ ISR(TIMER0_COMPA_vect)
 
 		if (++blinkyCounter > 5)
 		{
-			event ^= EVENT_BLINKY;
+			events ^= EVENT_BLINKY;
 			blinkyCounter = 0;
 		}
+
+		if (buttonLockout != 0)
+			buttonLockout--;
 
 		events |= EVENT_WRITE_OUTPUTS;
 	}
@@ -197,12 +203,12 @@ void xioInitialize()
 {
 	uint8_t i2cBuf[8];
 
-//	DDRB |= _BV(I2C_RESET) | _BV(I2C_OUTPUT_ENABLE);
-//	PORTB &= ~(_BV(I2C_OUTPUT_ENABLE));
-//	PORTB |= _BV(I2C_RESET);
+	events |= EVENT_I2C_ERROR;
 
-	DDRB = 0x03;
-	PORTB = 0x01;
+	PORTB &= ~(_BV(I2C_RESET) | _BV(I2C_OUTPUT_ENABLE));
+	DDRB |= _BV(I2C_RESET) | _BV(I2C_OUTPUT_ENABLE);
+	PORTB &= ~(_BV(I2C_OUTPUT_ENABLE));
+	PORTB |= _BV(I2C_RESET);
 
 	i2cBuf[0] = I2C_XIO1_ADDRESS;
 	i2cBuf[1] = 0x80 | 0x18;  // 0x80 is auto-increment
@@ -213,6 +219,9 @@ void xioInitialize()
 	i2cBuf[6] = 0xFF;
 	i2c_transmit(i2cBuf, 7, 1);
 	while(i2c_busy());
+
+	if (I2C_NO_STATE == i2c_state)
+		events &= ~(EVENT_I2C_ERROR);
 }
 
 
@@ -252,6 +261,14 @@ void xioOutputWrite()
 {
 	uint8_t i2cBuf[8];
 	uint8_t i;
+
+	while(i2c_busy());
+	if (i2c_state != I2C_NO_STATE)
+		events |= EVENT_I2C_ERROR;
+
+	if (events & EVENT_I2C_ERROR)
+		return;
+
 	i2cBuf[0] = I2C_XIO1_ADDRESS;
 	i2cBuf[1] = 0x80 | 0x08;  // 0x80 is auto-increment
 	for(i=0; i<sizeof(xio1Outputs); i++)
@@ -263,16 +280,21 @@ void xioOutputWrite()
 void xioInputRead()
 {
 	uint8_t i2cBuf[4];
+
+	if (events & EVENT_I2C_ERROR)
+		return;
+
 	i2cBuf[0] = I2C_XIO1_ADDRESS;
 	i2cBuf[1] = 0x80 | 0x03;  // 0x80 is auto-increment, 0x03 is the first register with inputs
 	i2c_transmit(i2cBuf, 2, 0);
-	
 	i2cBuf[0] = I2C_XIO1_ADDRESS | 0x01;
 	i2c_transmit(i2cBuf, 3, 1);
 	while(i2c_busy());
 	i2c_receive(i2cBuf, 3);
 	xio1Inputs[0] = i2cBuf[1];
 	xio1Inputs[1] = i2cBuf[2];	
+	if (i2c_state != I2C_NO_STATE)
+		events |= EVENT_I2C_ERROR;
 }
 
 void SetTurnout(uint8_t controlPoint, uint8_t points)
@@ -285,14 +307,14 @@ void SetTurnout(uint8_t controlPoint, uint8_t points)
 		case E_CONTROLPOINT:
 			if (POINTS_REVERSE_FORCE == points || (POINTS_REVERSE_SAFE == points && !(occupancy & OCC_E_OS_SECT)))
 				xio1Outputs[3] |= E_PNTS_CNTL;
-			else if (POINTS_MAIN_FORCE == points || (POINTS_MAIN_SAFE == points && !(occupancy & OCC_E_OS_SECT)))
+			else if (POINTS_NORMAL_FORCE == points || (POINTS_NORMAL_SAFE == points && !(occupancy & OCC_E_OS_SECT)))
 				xio1Outputs[3] &= ~(E_PNTS_CNTL);
 			break;
 
 		case W_CONTROLPOINT:
 			if (POINTS_REVERSE_FORCE == points || (POINTS_REVERSE_SAFE == points && !(occupancy & OCC_W_OS_SECT)))
 				xio1Outputs[3] |= W_PNTS_CNTL;
-			else if (POINTS_MAIN_FORCE == points || (POINTS_MAIN_SAFE == points && !(occupancy & OCC_W_OS_SECT)))
+			else if (POINTS_NORMAL_FORCE == points || (POINTS_NORMAL_SAFE == points && !(occupancy & OCC_W_OS_SECT)))
 				xio1Outputs[3] &= ~(W_PNTS_CNTL);
 			break;
 	}
@@ -318,7 +340,7 @@ void SetClearance(uint8_t controlPoint, uint8_t newClear)
 	}
 }
 
-void CodeCTCRoute(uint8_t controlPoint, uint8_t newClear, uint8_t newPoints)
+void CodeCTCRoute(uint8_t controlPoint, uint8_t newPoints, uint8_t newClear)
 {
 	SetClearance(controlPoint, newClear);
 	SetTurnout(controlPoint, newPoints);						
@@ -359,67 +381,58 @@ const SignalPinDefinition sigPinDefs[8] =
 	{SIG_E_SIDING    , 2, _BV(5), 2, _BV(7)}
 };
 
-
-void signal3WSearchlightToXIO(uint8_t aspect, uint8_t sigDefIdx)
-{
-	uint8_t redByte = sigPinDefs[sigDefIdx].redByte;
-	uint8_t redMask = sigPinDefs[sigDefIdx].redMask;
-	uint8_t greenByte = sigPinDefs[sigDefIdx].greenByte;
-	uint8_t greenMask = sigPinDefs[sigDefIdx].greenMask;
-
-	xio1Outputs[redByte] &= ~(redMask);
-	xio1Outputs[greenByte] &= ~(greenMask);
-
-	switch(aspect)
-	{
-		case ASPECT_OFF:
-			break;
-		
-		case ASPECT_GREEN:
-			xio1Outputs[greenByte] |= greenMask;
-			break;
-		
-		case ASPECT_FL_GREEN:
-			if (event & EVENT_BLINKY)
-				xio1Outputs[greenByte] |= greenMask;
-			break;
-
-		case ASPECT_YELLOW:
-			xio1Outputs[redByte] |= redMask;
-			xio1Outputs[greenByte] |= greenMask;		
-			break;
-		
-		case ASPECT_FL_YELLOW:
-			if (event & EVENT_BLINKY)
-			{
-				xio1Outputs[redByte] |= redMask;
-				xio1Outputs[greenByte] |= greenMask;
-			}
-			break;
-		
-		
-		case ASPECT_RED:
-		case ASPECT_LUNAR: // Can't display, so make like red
-		default:
-			xio1Outputs[redByte] |= redMask;			
-			break;
-
-		case ASPECT_FL_RED:
-			if (event & EVENT_BLINKY)
-				xio1Outputs[redByte] |= redMask;
-			break;
-
-	}
-
-}
-
-
 void SignalsToOutputs()
 {
 	uint8_t sigDefIdx;
 	for(sigDefIdx=0; sigDefIdx<sizeof(sigPinDefs)/sizeof(SignalPinDefinition); sigDefIdx++)
 	{
-		signal3WSearchlightToXIO(signalHeads[sigPinDefs[sigDefIdx].signalHead], sigDefIdx);
+		uint8_t redByte = sigPinDefs[sigDefIdx].redByte;
+		uint8_t redMask = sigPinDefs[sigDefIdx].redMask;
+		uint8_t greenByte = sigPinDefs[sigDefIdx].greenByte;
+		uint8_t greenMask = sigPinDefs[sigDefIdx].greenMask;
+
+		xio1Outputs[redByte] &= ~(redMask);
+		xio1Outputs[greenByte] &= ~(greenMask);
+
+		switch(signalHeads[sigPinDefs[sigDefIdx].signalHead])
+		{
+			case ASPECT_OFF:
+				break;
+		
+			case ASPECT_GREEN:
+				xio1Outputs[greenByte] |= greenMask;
+				break;
+		
+			case ASPECT_FL_GREEN:
+				if (events & EVENT_BLINKY)
+					xio1Outputs[greenByte] |= greenMask;
+				break;
+
+			case ASPECT_YELLOW:
+				xio1Outputs[redByte] |= redMask;
+				xio1Outputs[greenByte] |= greenMask;		
+				break;
+		
+			case ASPECT_FL_YELLOW:
+				if (events & EVENT_BLINKY)
+				{
+					xio1Outputs[redByte] |= redMask;
+					xio1Outputs[greenByte] |= greenMask;
+				}
+				break;
+		
+		
+			case ASPECT_RED:
+			case ASPECT_LUNAR: // Can't display, so make like red
+			default:
+				xio1Outputs[redByte] |= redMask;			
+				break;
+
+			case ASPECT_FL_RED:
+				if (events & EVENT_BLINKY)
+					xio1Outputs[redByte] |= redMask;
+				break;
+		}
 	}
 }
 
@@ -441,15 +454,19 @@ int main(void)
 	i2c_master_init();
 	xioInitialize();
 
-
-	signalHeads[0] = ASPECT_FL_YELLOW;
-	signalHeads[1] = ASPECT_GREEN;
 	while (1)
 	{
 		wdt_reset();
 		// Handle any packets that may have come in
 		if (mrbus_state & MRBUS_RX_PKT_READY)
 			PktHandler();
+
+		// The EVENT_I2C_ERROR flag gets set if a read or write fails for some reason
+		// I'm going to assume it's because the I2C bus went heywire, and we need to do
+		// a very solid reset on things.  No I2C stuff will happen until this gets cleared
+		
+		if (events & EVENT_I2C_ERROR)
+			xioInitialize();
 
 		if(events & (EVENT_READ_INPUTS))
 		{
@@ -471,23 +488,27 @@ int main(void)
 		// Control Point Logic
 
 		// Manual Control Logic
-		if (1) // FIXME: add provision for LC lockout
+		if (0 == buttonLockout) // FIXME: add provision for LC lockout
 		{
-			uint8_t delta = (debounced_inputs[1] ^ old_debounced_inputs[1]) & (E_PNTS_BTTN_NORMAL | E_PNTS_BTTN_REVERSE);
+			uint8_t delta = (debounced_inputs[1] ^ old_debounced_inputs[1]) & (E_PNTS_BTTN_NORMAL | E_PNTS_BTTN_REVERSE | W_PNTS_BTTN_NORMAL | W_PNTS_BTTN_REVERSE);
 			delta &= old_debounced_inputs[1];
 			
-			// Any bit in delta that's a 1 now corresponds to a switch going low in this cycle
-			if (delta & E_PNTS_BTTN_NORMAL)
-				CodeCTCRoute(E_CONTROLPOINT, POINTS_MAIN_FORCE, CLEARANCE_NONE);
-			else if (delta & E_PNTS_BTTN_REVERSE)
-				CodeCTCRoute(E_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
+			if (0 != delta)
+			{
+				buttonLockout = 5;
+				// Any bit in delta that's a 1 now corresponds to a switch going low in this cycle
+				if (delta & E_PNTS_BTTN_NORMAL)
+					CodeCTCRoute(E_CONTROLPOINT, POINTS_NORMAL_FORCE, CLEARANCE_NONE);
+				else if (delta & E_PNTS_BTTN_REVERSE)
+					CodeCTCRoute(E_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
 				
-			if (delta & W_PNTS_BTTN_NORMAL)
-				CodeCTCRoute(W_CONTROLPOINT, POINTS_MAIN_FORCE, CLEARANCE_NONE);
-			else if (delta & W_PNTS_BTTN_REVERSE)
-				CodeCTCRoute(W_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
+				if (delta & W_PNTS_BTTN_NORMAL)
+					CodeCTCRoute(W_CONTROLPOINT, POINTS_NORMAL_FORCE, CLEARANCE_NONE);
+				else if (delta & W_PNTS_BTTN_REVERSE)
+					CodeCTCRoute(W_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
+			}
 		}
-
+		
 		// Get the physical occupancy inputs from debounced
 		occupancy &= 0xF0;
 		occupancy |= 0x0F & (debounced_inputs[1]>>4);
@@ -499,6 +520,8 @@ int main(void)
 			SetClearance(W_CONTROLPOINT, CLEARANCE_NONE);
 
 
+		old_debounced_inputs[0] = debounced_inputs[0];
+		old_debounced_inputs[1] = debounced_inputs[1];
 		// Calculate signal aspects
 //		east_os_section_signals();
 //		west_os_section_signals();
@@ -561,10 +584,10 @@ int main(void)
 		{
 			mrbus_tx_buffer[MRBUS_PKT_SRC] = mrbus_dev_addr;
 			mrbus_tx_buffer[MRBUS_PKT_DEST] = 0xFF;
-			mrbus_tx_buffer[MRBUS_PKT_LEN] = 7;			
+			mrbus_tx_buffer[MRBUS_PKT_LEN] = 8;			
 			mrbus_tx_buffer[5] = 'S';
-			mrbus_tx_buffer[6] = 0x00;
-			mrbus_tx_buffer[7] = 0x00;
+			mrbus_tx_buffer[6] = deltaSave;
+			mrbus_tx_buffer[7] = debounced_inputs[1];
 			mrbus_state |= MRBUS_TX_PKT_READY;
 			changed = 0;
 		}
