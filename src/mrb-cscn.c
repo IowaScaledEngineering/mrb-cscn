@@ -221,7 +221,10 @@ void xioInitialize()
 	while(i2c_busy());
 
 	if (I2C_NO_STATE == i2c_state)
+	{
+		buttonLockout = 5;
 		events &= ~(EVENT_I2C_ERROR);
+	}
 }
 
 
@@ -291,10 +294,15 @@ void xioInputRead()
 	i2c_transmit(i2cBuf, 3, 1);
 	while(i2c_busy());
 	i2c_receive(i2cBuf, 3);
-	xio1Inputs[0] = i2cBuf[1];
-	xio1Inputs[1] = i2cBuf[2];	
+
 	if (i2c_state != I2C_NO_STATE)
+		// In the event of a read hose-out, don't put crap in the input buffer
 		events |= EVENT_I2C_ERROR;
+	else
+	{
+		xio1Inputs[0] = i2cBuf[1];
+		xio1Inputs[1] = i2cBuf[2];	
+	}
 }
 
 void SetTurnout(uint8_t controlPoint, uint8_t points)
@@ -443,6 +451,8 @@ int main(void)
 	// Application initialization
 	init();
 
+	wdt_enable(WDTO_1S);
+
 	// Initialize a 100 Hz timer.  See the definition for this function - you can
 	// remove it if you don't use it.
 	initialize100HzTimer();
@@ -488,7 +498,8 @@ int main(void)
 		// Control Point Logic
 
 		// Manual Control Logic
-		if (0 == buttonLockout) // FIXME: add provision for LC lockout
+		// Note the lockouts based on time since last button
+		if (0 == buttonLockout) 
 		{
 			uint8_t delta = (debounced_inputs[1] ^ old_debounced_inputs[1]) & (E_PNTS_BTTN_NORMAL | E_PNTS_BTTN_REVERSE | W_PNTS_BTTN_NORMAL | W_PNTS_BTTN_REVERSE);
 			delta &= old_debounced_inputs[1];
