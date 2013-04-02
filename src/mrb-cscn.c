@@ -64,6 +64,12 @@ uint8_t deltaSave=0;
 #define OCC_CTC_SIDING			0x04
 #define OCC_E_OS_SECT			0x02
 #define OCC_W_OS_SECT			0x01
+
+#define OCC_VIRT_E_ADJOIN     0x10
+#define OCC_VIRT_E_APPROACH   0x20
+#define OCC_VIRT_W_ADJOIN     0x40
+#define OCC_VIRT_W_APPROACH   0x80
+
 #define XOCC_E_ADJOIN			0x04
 #define XOCC_E_APPROACH			0x02
 #define XOCC_E_APPROACH2		0x01
@@ -79,6 +85,8 @@ uint8_t deltaSave=0;
 
 #define E_PNTS_CNTL         0x10
 #define W_PNTS_CNTL         0x20
+#define E_PNTS_STATUS       0x40
+#define W_PNTS_STATUS       0x80
 
 
 #define EE_E_APRCH_ADDR       0x10
@@ -114,6 +122,7 @@ uint8_t debounced_inputs[2], old_debounced_inputs[2];
 uint8_t clearance, old_clearance;
 uint8_t occupancy, old_occupancy;
 uint8_t ext_occupancy, old_ext_occupancy;
+uint8_t turnouts, old_turnouts;
 uint8_t clock_a[2] = {0,0}, clock_b[2] = {0,0};
 uint8_t signalHeads[8], old_signalHeads[8];
 
@@ -254,6 +263,7 @@ void init(void)
 	clearance = old_clearance = 0;
 	occupancy = old_occupancy = 0;
 	ext_occupancy = old_ext_occupancy = 0;
+	turnouts = old_turnouts = 0;
 
 }
 
@@ -305,6 +315,8 @@ void xioInputRead()
 	}
 }
 
+
+
 void SetTurnout(uint8_t controlPoint, uint8_t points)
 {
 	if (POINTS_UNAFFECTED == points)
@@ -314,18 +326,53 @@ void SetTurnout(uint8_t controlPoint, uint8_t points)
 	{
 		case E_CONTROLPOINT:
 			if (POINTS_REVERSE_FORCE == points || (POINTS_REVERSE_SAFE == points && !(occupancy & OCC_E_OS_SECT)))
+			{
+				turnouts |= E_PNTS_CNTL;
+				// Implementation-specific behaviour - do whatever needs to happen to physically move the turnout here
 				xio1Outputs[3] |= E_PNTS_CNTL;
+			}
 			else if (POINTS_NORMAL_FORCE == points || (POINTS_NORMAL_SAFE == points && !(occupancy & OCC_E_OS_SECT)))
-				xio1Outputs[3] &= ~(E_PNTS_CNTL);
+			{
+				turnouts &= ~(E_PNTS_CNTL);
+				// Implementation-specific behaviour - do whatever needs to happen to physically move the turnout here
+				xio1Outputs[3] &= ~(E_PNTS_CNTL); 
+			}
 			break;
 
 		case W_CONTROLPOINT:
 			if (POINTS_REVERSE_FORCE == points || (POINTS_REVERSE_SAFE == points && !(occupancy & OCC_W_OS_SECT)))
+			{
+				turnouts |= W_PNTS_CNTL;
+				// Implementation-specific behaviour - do whatever needs to happen to physically move the turnout here
 				xio1Outputs[3] |= W_PNTS_CNTL;
+			}
 			else if (POINTS_NORMAL_FORCE == points || (POINTS_NORMAL_SAFE == points && !(occupancy & OCC_W_OS_SECT)))
+			{
+				turnouts |= W_PNTS_CNTL;
+				// Implementation-specific behaviour - do whatever needs to happen to physically move the turnout here
 				xio1Outputs[3] &= ~(W_PNTS_CNTL);
+			}
 			break;
 	}
+
+
+	
+
+
+}
+
+uint8_t GetClearance(uint8_t controlPoint)
+{
+	switch(controlPoint)
+	{
+		case E_CONTROLPOINT:
+			return(clearance & 0x0F);
+
+		case W_CONTROLPOINT:
+			return((clearance>>4) & 0x0F);
+	}
+
+	return(CLEARANCE_NONE);
 }
 
 void SetClearance(uint8_t controlPoint, uint8_t newClear)
@@ -444,6 +491,161 @@ void SignalsToOutputs()
 	}
 }
 
+static inline void vitalLogic()
+{
+	uint8_t eastTurnoutLocked = (!(((turnouts & (E_PNTS_STATUS))?1:0) ^ ((turnouts & (E_PNTS_CNTL))?1:0)));
+	uint8_t westTurnoutLocked = (!(((turnouts & (W_PNTS_STATUS))?1:0) ^ ((turnouts & (W_PNTS_CNTL))?1:0)));	
+	uint8_t eastCleared = CLEARANCE_NONE;
+	uint8_t westCleared = CLEARANCE_NONE;	
+
+	// Start out with a safe default - everybody red
+	signalHeads[SIG_E_PNTS_UPPER] = ASPECT_RED;
+	signalHeads[SIG_E_PNTS_LOWER] = ASPECT_RED;
+	signalHeads[SIG_E_MAIN] = ASPECT_RED;
+	signalHeads[SIG_E_SIDING] = ASPECT_RED;
+
+	// Drop clearance if we see occupancy
+	if (occupancy & OCC_E_OS_SECT)
+		SetClearance(E_CONTROLPOINT, CLEARANCE_NONE);
+	if (occupancy & OCC_W_OS_SECT)
+		SetClearance(W_CONTROLPOINT, CLEARANCE_NONE);
+
+	eastCleared = GetClearance(E_CONTROLPOINT);
+	westCleared = GetClearance(W_CONTROLPOINT);
+	
+	if (eastTurnoutLocked && CLEARANCE_EAST == eastCleared)
+	{
+		// Eastbound clearance at the east control point means frog->points movement direction
+		uint8_t head = (turnouts & (E_PNTS_STATUS))?SIG_E_SIDING:SIG_E_MAIN;
+		
+		if (XOCC_E_ADJOIN & ext_occupancy || OCC_E_OS_SECT & occupancy)
+			signalHeads[head] = ASPECT_RED;
+		else if (XOCC_E_APPROACH & ext_occupancy)
+			signalHeads[head] = ASPECT_YELLOW;
+		else if (XOCC_E_APPROACH2 & ext_occupancy)
+			signalHeads[head] = ASPECT_FL_YELLOW;
+		else
+			signalHeads[head] = ASPECT_GREEN;
+	}
+	else if (eastTurnoutLocked && CLEARANCE_WEST == eastCleared)
+	{
+		// Westbound clearance at the east control point means points->frog movement direction	
+		if(turnouts & (E_PNTS_STATUS))
+		{
+			// Lined to siding
+			if ((OCC_CTC_SIDING | OCC_E_OS_SECT) & occupancy)
+				signalHeads[SIG_E_PNTS_LOWER] = ASPECT_RED;
+			else if ( (XOCC_W_ADJOIN & ext_occupancy || OCC_W_OS_SECT & occupancy)
+				|| !(turnouts & W_PNTS_STATUS)
+				|| !westTurnoutLocked
+				|| westCleared != CLEARANCE_WEST)
+				signalHeads[SIG_E_PNTS_LOWER] = ASPECT_YELLOW;
+			else
+				// Change this to GREEN if highball is allowed into the siding
+				signalHeads[SIG_E_PNTS_LOWER] = ASPECT_YELLOW;
+		} else {
+			// Lined to mainline
+			if ((OCC_CTC_MAIN | OCC_E_OS_SECT) & occupancy)
+				signalHeads[SIG_E_PNTS_UPPER] = ASPECT_RED;
+			else if ((XOCC_W_ADJOIN & ext_occupancy) || (OCC_W_OS_SECT & occupancy)
+				|| (turnouts & W_PNTS_STATUS)
+				|| !westTurnoutLocked
+				|| westCleared != CLEARANCE_WEST)
+				signalHeads[SIG_E_PNTS_UPPER] = ASPECT_YELLOW;
+			else if (XOCC_W_APPROACH & ext_occupancy)
+				signalHeads[SIG_E_PNTS_UPPER] = ASPECT_FL_YELLOW;
+			else
+				signalHeads[SIG_E_PNTS_UPPER] = ASPECT_GREEN;
+		}
+	}
+	// The else case is that the turnout isn't locked up or we're not cleared
+	// Good news - the signals are already defaulted to red
+
+
+	if (westTurnoutLocked && CLEARANCE_WEST == westCleared)
+	{
+		// Eastbound clearance at the east control point means frog->points movement direction
+		uint8_t head = (turnouts & (W_PNTS_STATUS))?SIG_W_SIDING:SIG_W_MAIN;
+		
+		if (XOCC_W_ADJOIN & ext_occupancy || OCC_W_OS_SECT & occupancy)
+			signalHeads[head] = ASPECT_RED;
+		else if (XOCC_W_APPROACH & ext_occupancy)
+			signalHeads[head] = ASPECT_YELLOW;
+		else if (XOCC_W_APPROACH2 & ext_occupancy)
+			signalHeads[head] = ASPECT_FL_YELLOW;
+		else
+			signalHeads[head] = ASPECT_GREEN;
+	}
+	else if (westTurnoutLocked && CLEARANCE_EAST == westCleared)
+	{
+		// Westbound clearance at the east control point means points->frog movement direction	
+		if(turnouts & (W_PNTS_STATUS))
+		{
+			// Lined to siding
+			if ((OCC_CTC_SIDING | OCC_W_OS_SECT) & occupancy)
+				signalHeads[SIG_W_PNTS_LOWER] = ASPECT_RED;
+			else if ( (XOCC_W_ADJOIN & ext_occupancy || OCC_W_OS_SECT & occupancy)
+				|| !(turnouts & E_PNTS_STATUS)
+				|| !eastTurnoutLocked
+				|| eastCleared != CLEARANCE_EAST)
+				signalHeads[SIG_W_PNTS_LOWER] = ASPECT_YELLOW;
+			else
+				// Change this to GREEN if highball is allowed into the siding
+				signalHeads[SIG_W_PNTS_LOWER] = ASPECT_YELLOW;
+		} else {
+			// Lined to mainline
+			if ((OCC_CTC_MAIN | OCC_W_OS_SECT) & occupancy)
+				signalHeads[SIG_W_PNTS_UPPER] = ASPECT_RED;
+			else if ((XOCC_E_ADJOIN & ext_occupancy) || (OCC_E_OS_SECT & occupancy)
+				|| (turnouts & E_PNTS_STATUS)
+				|| !eastTurnoutLocked
+				|| eastCleared != CLEARANCE_EAST)
+				signalHeads[SIG_W_PNTS_UPPER] = ASPECT_YELLOW;
+			else if (XOCC_E_APPROACH & ext_occupancy)
+				signalHeads[SIG_W_PNTS_UPPER] = ASPECT_FL_YELLOW;
+			else
+				signalHeads[SIG_W_PNTS_UPPER] = ASPECT_GREEN;
+		}
+	}
+
+			
+	// Clear virtual occupancies
+	occupancy &= ~(OCC_VIRT_E_APPROACH | OCC_VIRT_E_ADJOIN | OCC_VIRT_W_APPROACH | OCC_VIRT_W_ADJOIN);
+
+	// Calculate east CP virtual occupancies
+	if(!(((turnouts & (E_PNTS_STATUS))?1:0) ^ ((turnouts & (E_PNTS_CNTL))?1:0)))
+	{
+		// Turnout is properly lined one way or the other
+		if ((turnouts & E_PNTS_STATUS) && (ASPECT_RED == signalHeads[SIG_W_SIDING]))
+			occupancy |= OCC_VIRT_E_APPROACH;
+		else if ((!(turnouts & E_PNTS_STATUS)) && (ASPECT_RED == signalHeads[SIG_W_MAIN]))
+			occupancy |= OCC_VIRT_E_APPROACH;
+	
+		if (ASPECT_RED == signalHeads[SIG_E_PNTS_LOWER] && ASPECT_RED == signalHeads[SIG_E_PNTS_UPPER])
+			occupancy |= OCC_VIRT_E_ADJOIN;
+	} else {
+		// East Control Point improperly lined, trip virtual occupancy
+			occupancy |= OCC_VIRT_E_APPROACH | OCC_VIRT_E_ADJOIN;
+	}			
+
+	// Calculate west CP virtual occupancies
+	if(!(((turnouts & (W_PNTS_STATUS))?1:0) ^ ((turnouts & (W_PNTS_CNTL))?1:0)))
+	{
+		// Turnout is properly lined one way or the other
+		if ((turnouts & W_PNTS_STATUS) && (ASPECT_RED == signalHeads[SIG_E_SIDING]))
+			occupancy |= OCC_VIRT_W_APPROACH;
+		else if ((!(turnouts & E_PNTS_STATUS)) && (ASPECT_RED == signalHeads[SIG_E_MAIN]))
+			occupancy |= OCC_VIRT_W_APPROACH;
+	
+		if (ASPECT_RED == signalHeads[SIG_W_PNTS_LOWER] && ASPECT_RED == signalHeads[SIG_W_PNTS_UPPER])
+			occupancy |= OCC_VIRT_E_ADJOIN;
+	} else {
+		// West Control Point improperly lined, trip virtual occupancy
+			occupancy |= OCC_VIRT_E_APPROACH | OCC_VIRT_E_ADJOIN;
+	}	
+}
+
+
 int main(void)
 {
 	uint8_t changed = 0;
@@ -492,55 +694,46 @@ int main(void)
 				clock_b[i] &= delta;
 				debounced_inputs[i] ^= ~(~delta | clock_a[i] | clock_b[i]);
 			}
+
+
+			// Manual Control Logic
+			// Note the lockouts based on time since last button
+			if (0 == buttonLockout) 
+			{
+				uint8_t delta = (debounced_inputs[1] ^ old_debounced_inputs[1]) & (E_PNTS_BTTN_NORMAL | E_PNTS_BTTN_REVERSE | W_PNTS_BTTN_NORMAL | W_PNTS_BTTN_REVERSE);
+				delta &= old_debounced_inputs[1];
+			
+				if (0 != delta)
+				{
+					buttonLockout = 5;
+					// Any bit in delta that's a 1 now corresponds to a switch going low in this cycle
+					if (delta & E_PNTS_BTTN_NORMAL)
+						CodeCTCRoute(E_CONTROLPOINT, POINTS_NORMAL_FORCE, CLEARANCE_NONE);
+					else if (delta & E_PNTS_BTTN_REVERSE)
+						CodeCTCRoute(E_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
+				
+					if (delta & W_PNTS_BTTN_NORMAL)
+						CodeCTCRoute(W_CONTROLPOINT, POINTS_NORMAL_FORCE, CLEARANCE_NONE);
+					else if (delta & W_PNTS_BTTN_REVERSE)
+						CodeCTCRoute(W_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
+				}
+			}
+		
+			// Get the physical occupancy inputs from debounced
+			occupancy &= 0xF0;
+			occupancy |= 0x0F & (debounced_inputs[1]>>4);
+			turnouts &= ~(E_PNTS_STATUS | W_PNTS_STATUS);
+			turnouts |= debounced_inputs[0] & (E_PNTS_STATUS | W_PNTS_STATUS);
+
+			old_debounced_inputs[0] = debounced_inputs[0];
+			old_debounced_inputs[1] = debounced_inputs[1];
+
 			events &= ~(EVENT_READ_INPUTS);
 		}			
 
-		// Control Point Logic
-
-		// Manual Control Logic
-		// Note the lockouts based on time since last button
-		if (0 == buttonLockout) 
-		{
-			uint8_t delta = (debounced_inputs[1] ^ old_debounced_inputs[1]) & (E_PNTS_BTTN_NORMAL | E_PNTS_BTTN_REVERSE | W_PNTS_BTTN_NORMAL | W_PNTS_BTTN_REVERSE);
-			delta &= old_debounced_inputs[1];
-			
-			if (0 != delta)
-			{
-				buttonLockout = 5;
-				// Any bit in delta that's a 1 now corresponds to a switch going low in this cycle
-				if (delta & E_PNTS_BTTN_NORMAL)
-					CodeCTCRoute(E_CONTROLPOINT, POINTS_NORMAL_FORCE, CLEARANCE_NONE);
-				else if (delta & E_PNTS_BTTN_REVERSE)
-					CodeCTCRoute(E_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
-				
-				if (delta & W_PNTS_BTTN_NORMAL)
-					CodeCTCRoute(W_CONTROLPOINT, POINTS_NORMAL_FORCE, CLEARANCE_NONE);
-				else if (delta & W_PNTS_BTTN_REVERSE)
-					CodeCTCRoute(W_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
-			}
-		}
-		
-		// Get the physical occupancy inputs from debounced
-		occupancy &= 0xF0;
-		occupancy |= 0x0F & (debounced_inputs[1]>>4);
-
-		if (occupancy & OCC_E_OS_SECT)
-			SetClearance(E_CONTROLPOINT, CLEARANCE_NONE);
-
-		if (occupancy & OCC_W_OS_SECT)
-			SetClearance(W_CONTROLPOINT, CLEARANCE_NONE);
-
-
-		old_debounced_inputs[0] = debounced_inputs[0];
-		old_debounced_inputs[1] = debounced_inputs[1];
-		// Calculate signal aspects
-//		east_os_section_signals();
-//		west_os_section_signals();
-		
 		// Vital Logic
-
-
-
+		vitalLogic();
+	
 		// Send output
 		if (events & EVENT_WRITE_OUTPUTS)
 		{
@@ -549,56 +742,143 @@ int main(void)
 			events &= ~(EVENT_WRITE_OUTPUTS);
 		}
 
-
 		// Test if something changed from the last time
 		// around the loop - we need to send an update 
 		//   packet if it did 
-/*		   
-		if ((old_e_pnts_usig != e_pnts_usig) ||
-		(old_e_pnts_lsig != e_pnts_lsig) ||
-		(old_e_main_sig != e_main_sig) ||
-		(old_e_side_sig != e_side_sig) ||
-		(old_w_pnts_usig != w_pnts_usig) ||
-		(old_w_pnts_lsig != w_pnts_lsig) ||
-		(old_w_main_sig != w_main_sig) ||
-		(old_w_side_sig != w_side_sig) ||
-		(old_occupancy != occupancy) ||
-		(old_ext_occupancy != ext_occupancy) ||
-		(old_turnouts != turnouts) ||
-		(old_clearance != clearance))
+		if (0 != memcmp(signalHeads, old_signalHeads, sizeof(signalHeads))
+			|| old_turnouts != turnouts
+			|| old_clearance != clearance
+			|| old_occupancy != occupancy)
 		{
 			// Something Changed - time to update
-			old_e_pnts_usig = e_pnts_usig;
-			old_e_pnts_lsig = e_pnts_lsig;
-			old_e_main_sig = e_main_sig;
-			old_e_side_sig = e_side_sig;
-			old_w_pnts_usig = w_pnts_usig;
-			old_w_pnts_lsig = w_pnts_lsig;
-			old_w_main_sig = w_main_sig;
-			old_w_side_sig = w_side_sig;
+			for(i=0; i<sizeof(signalHeads); i++)
+				signalHeads[i] = old_signalHeads[i];
+
+			old_turnouts = turnouts;
+			old_clearance = clearance;
 			old_occupancy = occupancy;
 			old_ext_occupancy = ext_occupancy;
-			old_clearance = clearance;
-			old_turnouts = turnouts;
-			
 			// Set changed such that a packet gets sent
 			changed = 1;
 		}
-		else*/ if (decisecs >= update_decisecs)
+		else if (decisecs >= update_decisecs)
 			changed = 1;
 
 		if (changed)
-			decisecs = 0;
+			if (decisecs > update_decisecs)
+				decisecs -= update_decisecs;
+			else
+				decisecs = 0;
 
 		/* If we need to send a packet and we're not already busy... */
+
+/*
+Byte
+6 - East Frog Signals
+ 4:7 - Siding Signal
+ 0:3 - Main Signal
+7 - East Points Signal
+ 4:7 - E Points Signal Upper
+ 0:3 - E Points Signal Lower
+8 - West Frog Signals
+ 4:7 - Siding Signal
+ 0:3 - Main Signal
+9 - West Points Signal
+ 4:7 - W Points Signal Upper
+ 0:3 - W Points Signal Lower
+
+10 - Occupancy 1
+ 7 - E Adjoining
+ 6 - E Adjacent
+ 5 - W Adjoining
+ 4 - W Adjacent
+ 3 - Main
+ 2 - Siding
+ 1 - East OS Section
+ 0 - West OS Section
+
+11: East OS Status
+ 7 - E OS Adjacent Virtual Occ
+ 6 - E OS Virtual Occ
+ 5 - E points lined Siding
+ 4 - E points lined Mainline
+ 3 - Undefined
+ 2 - E OS not cleared
+ 1 - E OS cleared Westbound
+ 0 - E OS cleared Eastbound
+ 
+ */
+
+#define MRB_STATUS_CP_CLEARED_EAST   0x01
+#define MRB_STATUS_CP_CLEARED_WEST   0x02
+#define MRB_STATUS_CP_CLEARED_NONE   0x04
+#define MRB_STATUS_CP_SWITCH_NORMAL  0x10
+#define MRB_STATUS_CP_SWITCH_REVERSE 0x20
+#define MRB_STATUS_CP_VOCC_ADJOIN    0x40
+#define MRB_STATUS_CP_VOCC_APPROACH  0x80
+
 		if (changed && !(mrbus_state & (MRBUS_TX_BUF_ACTIVE | MRBUS_TX_PKT_READY)))
 		{
 			mrbus_tx_buffer[MRBUS_PKT_SRC] = mrbus_dev_addr;
 			mrbus_tx_buffer[MRBUS_PKT_DEST] = 0xFF;
 			mrbus_tx_buffer[MRBUS_PKT_LEN] = 8;			
 			mrbus_tx_buffer[5] = 'S';
-			mrbus_tx_buffer[6] = deltaSave;
-			mrbus_tx_buffer[7] = debounced_inputs[1];
+
+			mrbus_tx_buffer[6] = ((signalHeads[SIG_E_SIDING]<<4) & 0xF0) | (signalHeads[SIG_E_MAIN] & 0x0F);
+			mrbus_tx_buffer[7] = ((signalHeads[SIG_E_PNTS_UPPER]<<4) & 0xF0) | (signalHeads[SIG_E_PNTS_LOWER] & 0x0F);
+			mrbus_tx_buffer[8] = ((signalHeads[SIG_W_SIDING]<<4) & 0xF0) | (signalHeads[SIG_W_MAIN] & 0x0F);
+			mrbus_tx_buffer[9] = ((signalHeads[SIG_W_PNTS_UPPER]<<4) & 0xF0) | (signalHeads[SIG_W_PNTS_LOWER] & 0x0F);
+
+			mrbus_tx_buffer[10] = occupancy;
+			
+			switch(GetClearance(E_CONTROLPOINT))
+			{
+				case CLEARANCE_EAST:
+					mrbus_tx_buffer[11] = MRB_STATUS_CP_CLEARED_EAST;
+					break;
+				case CLEARANCE_WEST:
+					mrbus_tx_buffer[11] = MRB_STATUS_CP_CLEARED_WEST;
+					break;
+				case CLEARANCE_NONE:
+				default:
+					mrbus_tx_buffer[11] = MRB_STATUS_CP_CLEARED_NONE;
+					break;
+			}
+
+			if (turnouts & E_PNTS_STATUS)  // Low is normal, high is reverse
+				mrbus_tx_buffer[11] |= MRB_STATUS_CP_SWITCH_REVERSE;
+			else
+				mrbus_tx_buffer[11] |= MRB_STATUS_CP_SWITCH_NORMAL;
+				
+			if (occupancy & OCC_VIRT_E_ADJOIN)
+				mrbus_tx_buffer[11] |= MRB_STATUS_CP_VOCC_ADJOIN;
+			if (occupancy & OCC_VIRT_E_APPROACH)
+				mrbus_tx_buffer[11] |= MRB_STATUS_CP_VOCC_APPROACH;
+
+			switch(GetClearance(W_CONTROLPOINT))
+			{
+				case CLEARANCE_EAST:
+					mrbus_tx_buffer[12] = 0x01;
+					break;
+				case CLEARANCE_WEST:
+					mrbus_tx_buffer[12] = 0x02;
+					break;
+				case CLEARANCE_NONE:
+				default:
+					mrbus_tx_buffer[12] = 0x04;
+					break;
+			}
+
+			if (turnouts & W_PNTS_STATUS)  // Low is normal, high is reverse
+				mrbus_tx_buffer[12] |= MRB_STATUS_CP_SWITCH_REVERSE;
+			else
+				mrbus_tx_buffer[12] |= MRB_STATUS_CP_SWITCH_NORMAL;
+
+			if (occupancy & OCC_VIRT_W_ADJOIN)
+				mrbus_tx_buffer[12] |= MRB_STATUS_CP_VOCC_ADJOIN;
+			if (occupancy & OCC_VIRT_W_APPROACH)
+				mrbus_tx_buffer[12] |= MRB_STATUS_CP_VOCC_APPROACH;
+
 			mrbus_state |= MRBUS_TX_PKT_READY;
 			changed = 0;
 		}
