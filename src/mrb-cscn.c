@@ -32,10 +32,10 @@ LICENSE:
 
 void PktHandler(void);
 
-extern uint8_t mrbus_activity;
-extern uint8_t mrbus_rx_buffer[MRBUS_BUFFER_SIZE];
-extern uint8_t mrbus_tx_buffer[MRBUS_BUFFER_SIZE];
-extern uint8_t mrbus_state;
+extern volatile uint8_t mrbus_activity;
+extern volatile uint8_t mrbus_rx_buffer[MRBUS_BUFFER_SIZE];
+extern volatile uint8_t mrbus_tx_buffer[MRBUS_BUFFER_SIZE];
+extern volatile uint8_t mrbus_state;
 
 uint8_t mrbus_dev_addr = 0;
 volatile uint8_t events = 0;
@@ -133,6 +133,20 @@ uint8_t ext_occupancy, old_ext_occupancy;
 uint8_t turnouts, old_turnouts;
 uint8_t clock_a[2] = {0,0}, clock_b[2] = {0,0};
 uint8_t signalHeads[8], old_signalHeads[8];
+
+uint8_t PktDirToClearance(uint8_t pktDir)
+{
+	switch(pktDir)
+	{
+		case 'E':
+			return(CLEARANCE_EAST);
+		case 'W':
+			return(CLEARANCE_WEST);
+		default:
+			return(CLEARANCE_NONE);
+	}
+
+}
 
 // Aspect Definitions
 
@@ -387,7 +401,7 @@ void SetTurnout(uint8_t controlPoint, uint8_t points)
 			}
 			else if (POINTS_NORMAL_FORCE == points || (POINTS_NORMAL_SAFE == points && !(occupancy & OCC_W_OS_SECT)))
 			{
-				turnouts |= W_PNTS_CNTL;
+				turnouts &= ~(W_PNTS_CNTL);
 				// Implementation-specific behaviour - do whatever needs to happen to physically move the turnout here
 				xio1Outputs[3] &= ~(W_PNTS_CNTL);
 			}
@@ -558,6 +572,11 @@ static inline void vitalLogic()
 	signalHeads[SIG_E_MAIN] = ASPECT_RED;
 	signalHeads[SIG_E_SIDING] = ASPECT_RED;
 
+	signalHeads[SIG_W_PNTS_UPPER] = ASPECT_RED;
+	signalHeads[SIG_W_PNTS_LOWER] = ASPECT_RED;
+	signalHeads[SIG_W_MAIN] = ASPECT_RED;
+	signalHeads[SIG_W_SIDING] = ASPECT_RED;
+
 	// Drop clearance if we see occupancy
 	if (occupancy & OCC_E_OS_SECT)
 		SetClearance(E_CONTROLPOINT, CLEARANCE_NONE);
@@ -688,14 +707,14 @@ static inline void vitalLogic()
 		// Turnout is properly lined one way or the other
 		if ((turnouts & W_PNTS_STATUS) && (ASPECT_RED == signalHeads[SIG_E_SIDING]))
 			occupancy |= OCC_VIRT_W_APPROACH;
-		else if ((!(turnouts & E_PNTS_STATUS)) && (ASPECT_RED == signalHeads[SIG_E_MAIN]))
+		else if ((!(turnouts & W_PNTS_STATUS)) && (ASPECT_RED == signalHeads[SIG_E_MAIN]))
 			occupancy |= OCC_VIRT_W_APPROACH;
 	
 		if (ASPECT_RED == signalHeads[SIG_W_PNTS_LOWER] && ASPECT_RED == signalHeads[SIG_W_PNTS_UPPER])
-			occupancy |= OCC_VIRT_E_ADJOIN;
+			occupancy |= OCC_VIRT_W_ADJOIN;
 	} else {
 		// West Control Point improperly lined, trip virtual occupancy
-			occupancy |= OCC_VIRT_E_APPROACH | OCC_VIRT_E_ADJOIN;
+			occupancy |= OCC_VIRT_W_APPROACH | OCC_VIRT_W_ADJOIN;
 	}	
 }
 
@@ -799,7 +818,7 @@ int main(void)
 		// Test if something changed from the last time
 		// around the loop - we need to send an update 
 		//   packet if it did 
-		if (0 != memcmp(signalHeads, old_signalHeads, sizeof(signalHeads))
+/*		if (0 != memcmp(signalHeads, old_signalHeads, sizeof(signalHeads))
 			|| old_turnouts != turnouts
 			|| old_clearance != clearance
 			|| old_occupancy != occupancy)
@@ -815,7 +834,7 @@ int main(void)
 			// Set changed such that a packet gets sent
 			changed = 1;
 		}
-		else if (decisecs >= update_decisecs)
+		else*/ if (decisecs >= update_decisecs)
 			changed = 1;
 
 		if (changed)
@@ -876,7 +895,7 @@ Byte
 		{
 			mrbus_tx_buffer[MRBUS_PKT_SRC] = mrbus_dev_addr;
 			mrbus_tx_buffer[MRBUS_PKT_DEST] = 0xFF;
-			mrbus_tx_buffer[MRBUS_PKT_LEN] = 8;			
+			mrbus_tx_buffer[MRBUS_PKT_LEN] = 13;			
 			mrbus_tx_buffer[5] = 'S';
 
 			mrbus_tx_buffer[6] = ((signalHeads[SIG_E_SIDING]<<4) & 0xF0) | (signalHeads[SIG_E_MAIN] & 0x0F);
@@ -884,7 +903,7 @@ Byte
 			mrbus_tx_buffer[8] = ((signalHeads[SIG_W_SIDING]<<4) & 0xF0) | (signalHeads[SIG_W_MAIN] & 0x0F);
 			mrbus_tx_buffer[9] = ((signalHeads[SIG_W_PNTS_UPPER]<<4) & 0xF0) | (signalHeads[SIG_W_PNTS_LOWER] & 0x0F);
 
-			mrbus_tx_buffer[10] = occupancy;
+			mrbus_tx_buffer[10] = (occupancy & 0x0F) | (turnouts & 0xF0);
 			
 			switch(GetClearance(E_CONTROLPOINT))
 			{
@@ -913,14 +932,14 @@ Byte
 			switch(GetClearance(W_CONTROLPOINT))
 			{
 				case CLEARANCE_EAST:
-					mrbus_tx_buffer[12] = 0x01;
+					mrbus_tx_buffer[12] = MRB_STATUS_CP_CLEARED_EAST;
 					break;
 				case CLEARANCE_WEST:
-					mrbus_tx_buffer[12] = 0x02;
+					mrbus_tx_buffer[12] = MRB_STATUS_CP_CLEARED_WEST;
 					break;
 				case CLEARANCE_NONE:
 				default:
-					mrbus_tx_buffer[12] = 0x04;
+					mrbus_tx_buffer[12] = MRB_STATUS_CP_CLEARED_NONE;
 					break;
 			}
 
@@ -1035,15 +1054,15 @@ void PktHandler(void)
 			// There are two forms of this - the 8 byte packet (old school) and the 9 byte packet (new)
 			// Old school implied the east control point.  New specifies the CP number in the first byte
 			if (8 == mrbus_rx_buffer[MRBUS_PKT_LEN])
-				CodeCTCRoute(E_CONTROLPOINT, mrbus_rx_buffer[6], mrbus_rx_buffer[7]);
+				CodeCTCRoute(E_CONTROLPOINT, mrbus_rx_buffer[6], PktDirToClearance(mrbus_rx_buffer[7]));
 			else
-				CodeCTCRoute(mrbus_rx_buffer[6], mrbus_rx_buffer[7], mrbus_rx_buffer[8]);
+				CodeCTCRoute(mrbus_rx_buffer[6], mrbus_rx_buffer[7], PktDirToClearance(mrbus_rx_buffer[8]));
 			goto PktIgnore;
 
 		case 'B':
 			// CTC Command
 			// B is the old school variant of C for the western control point
-			CodeCTCRoute(W_CONTROLPOINT, mrbus_rx_buffer[6], mrbus_rx_buffer[7]);
+			CodeCTCRoute(W_CONTROLPOINT, mrbus_rx_buffer[6], PktDirToClearance(mrbus_rx_buffer[7]));
 			goto PktIgnore;
 
 		case 'T':
