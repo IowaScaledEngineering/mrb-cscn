@@ -818,14 +818,15 @@ int main(void)
 		// Test if something changed from the last time
 		// around the loop - we need to send an update 
 		//   packet if it did 
-/*		if (0 != memcmp(signalHeads, old_signalHeads, sizeof(signalHeads))
+	
+		if (memcmp(signalHeads, old_signalHeads, sizeof(signalHeads))
 			|| old_turnouts != turnouts
 			|| old_clearance != clearance
 			|| old_occupancy != occupancy)
 		{
 			// Something Changed - time to update
 			for(i=0; i<sizeof(signalHeads); i++)
-				signalHeads[i] = old_signalHeads[i];
+				old_signalHeads[i] = signalHeads[i];
 
 			old_turnouts = turnouts;
 			old_clearance = clearance;
@@ -834,7 +835,7 @@ int main(void)
 			// Set changed such that a packet gets sent
 			changed = 1;
 		}
-		else*/ if (decisecs >= update_decisecs)
+		else if (decisecs >= update_decisecs)
 			changed = 1;
 
 		if (changed)
