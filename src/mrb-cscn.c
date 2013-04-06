@@ -494,14 +494,14 @@ typedef struct
 
 const SignalPinDefinition sigPinDefs[8] = 
 {
-	{SIG_W_PNTS_UPPER, 0, _BV(0), 0, _BV(2)},
-	{SIG_W_PNTS_LOWER, 0, _BV(3), 0, _BV(5)},
-	{SIG_W_MAIN      , 0, _BV(6), 1, _BV(0)},
-	{SIG_W_SIDING    , 1, _BV(1), 1, _BV(3)},
-	{SIG_E_PNTS_UPPER, 1, _BV(4), 1, _BV(6)},
-	{SIG_E_PNTS_LOWER, 1, _BV(7), 2, _BV(1)},
-	{SIG_E_MAIN      , 2, _BV(2), 2, _BV(4)},
-	{SIG_E_SIDING    , 2, _BV(5), 2, _BV(7)}
+	{SIG_W_PNTS_UPPER, 0, _BV(0), 0, _BV(1)},
+	{SIG_W_PNTS_LOWER, 0, _BV(2), 0, _BV(3)},
+	{SIG_W_MAIN      , 0, _BV(4), 0, _BV(5)},
+	{SIG_W_SIDING    , 0, _BV(6), 0, _BV(7)},
+	{SIG_E_PNTS_UPPER, 1, _BV(0), 1, _BV(1)},
+	{SIG_E_PNTS_LOWER, 1, _BV(2), 1, _BV(3)},
+	{SIG_E_MAIN      , 1, _BV(4), 1, _BV(5)},
+	{SIG_E_SIDING    , 1, _BV(6), 1, _BV(7)}
 };
 
 void SignalsToOutputs()
