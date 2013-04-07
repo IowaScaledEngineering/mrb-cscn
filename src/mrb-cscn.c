@@ -261,6 +261,12 @@ void init(void)
 		eeprom_write_byte((uint8_t*)MRBUS_EE_DEVICE_ADDR, mrbus_dev_addr);
 	}
 
+	update_decisecs = (uint16_t)eeprom_read_byte((uint8_t*)MRBUS_EE_DEVICE_UPDATE_L) 
+		| (((uint16_t)eeprom_read_byte((uint8_t*)MRBUS_EE_DEVICE_UPDATE_H)) << 8);
+
+	update_decisecs = max(1, update_decisecs);
+
+
 	// Setup ADC for bus voltage monitoring
 	ADMUX  = 0x46;  // AVCC reference; ADC6 input
 	ADCSRA = _BV(ADATE) | _BV(ADIF) | _BV(ADPS2) | _BV(ADPS1); // 128 prescaler
@@ -1052,9 +1058,9 @@ void PktHandler(void)
 
 		case 'C':
 			// CTC Command
-			// There are two forms of this - the 8 byte packet (old school) and the 9 byte packet (new)
+			// There are two forms of this - the 8/10 byte packet (old school) and the 9 byte packet (new)
 			// Old school implied the east control point.  New specifies the CP number in the first byte
-			if (8 == mrbus_rx_buffer[MRBUS_PKT_LEN])
+			if (8 == mrbus_rx_buffer[MRBUS_PKT_LEN] || 10 == mrbus_rx_buffer[MRBUS_PKT_LEN])
 				CodeCTCRoute(E_CONTROLPOINT, mrbus_rx_buffer[6], PktDirToClearance(mrbus_rx_buffer[7]));
 			else
 				CodeCTCRoute(mrbus_rx_buffer[6], mrbus_rx_buffer[7], PktDirToClearance(mrbus_rx_buffer[8]));
