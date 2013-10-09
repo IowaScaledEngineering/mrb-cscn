@@ -311,8 +311,11 @@ void xioInitialize()
 
 	PORTB &= ~(_BV(I2C_RESET) | _BV(I2C_OUTPUT_ENABLE));
 	DDRB |= _BV(I2C_RESET) | _BV(I2C_OUTPUT_ENABLE);
+	_delay_us(1);
 	PORTB &= ~(_BV(I2C_OUTPUT_ENABLE));
 	PORTB |= _BV(I2C_RESET);
+	_delay_us(1);
+
 
 	i2cBuf[0] = I2C_XIO1_ADDRESS;
 	i2cBuf[1] = 0x80 | 0x18;  // 0x80 is auto-increment
@@ -324,7 +327,7 @@ void xioInitialize()
 	i2c_transmit(i2cBuf, 7, 1);
 	while(i2c_busy());
 
-	if (I2C_NO_STATE == i2c_state)
+	if (i2c_transaction_successful())
 	{
 		buttonLockout = 5;
 		events &= ~(EVENT_I2C_ERROR);
@@ -337,11 +340,6 @@ void xioOutputWrite()
 	uint8_t i;
 
 	while(i2c_busy());
-	if (i2c_state != I2C_NO_STATE)
-		events |= EVENT_I2C_ERROR;
-
-	if (events & EVENT_I2C_ERROR)
-		return;
 
 	i2cBuf[0] = I2C_XIO1_ADDRESS;
 	i2cBuf[1] = 0x80 | 0x08;  // 0x80 is auto-increment
@@ -349,14 +347,20 @@ void xioOutputWrite()
 		i2cBuf[2+i] = xio1Outputs[i];
 
 	i2c_transmit(i2cBuf, 2+sizeof(xio1Outputs), 1);
+
+	if (!i2c_transaction_successful())
+		events |= EVENT_I2C_ERROR;
 }
 
 void xioInputRead()
 {
 	uint8_t i2cBuf[4];
+	uint8_t successful = 0;
 
 	if (events & EVENT_I2C_ERROR)
 		return;
+
+	while(i2c_busy());
 
 	i2cBuf[0] = I2C_XIO1_ADDRESS;
 	i2cBuf[1] = 0x80 | 0x03;  // 0x80 is auto-increment, 0x03 is the first register with inputs
@@ -364,9 +368,9 @@ void xioInputRead()
 	i2cBuf[0] = I2C_XIO1_ADDRESS | 0x01;
 	i2c_transmit(i2cBuf, 3, 1);
 	while(i2c_busy());
-	i2c_receive(i2cBuf, 3);
+	successful = i2c_receive(i2cBuf, 3);
 
-	if (i2c_state != I2C_NO_STATE)
+	if (!successful)
 		// In the event of a read hose-out, don't put crap in the input buffer
 		events |= EVENT_I2C_ERROR;
 	else
