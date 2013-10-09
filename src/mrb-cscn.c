@@ -42,6 +42,7 @@ volatile uint8_t events = 0;
 
 #define EVENT_READ_INPUTS    0x01
 #define EVENT_WRITE_OUTPUTS  0x02
+#define EVENT_REINIT_OUTPUTS 0x04
 #define EVENT_I2C_ERROR      0x40
 #define EVENT_BLINKY         0x80
 
@@ -180,10 +181,10 @@ uint8_t PktDirToClearance(uint8_t pktDir)
 // If you do remove it, be sure to yank the interrupt handler and ticks/secs as well
 // and the call to this function in the main function
 
-uint8_t ticks;
-uint16_t decisecs=0;
+volatile uint8_t ticks;
+volatile uint16_t decisecs=0;
 uint16_t update_decisecs=10;
-uint8_t blinkyCounter = 0;
+volatile uint8_t blinkyCounter = 0;
 volatile uint8_t buttonLockout=5;
 
 void initialize100HzTimer(void)
@@ -303,19 +304,9 @@ uint8_t xio1Inputs[2];
 #define I2C_IRQ           2
 #define I2C_XIO1_ADDRESS 0x4E
 
-void xioInitialize()
+void xioDirectionSet()
 {
 	uint8_t i2cBuf[8];
-
-	events |= EVENT_I2C_ERROR;
-
-	PORTB &= ~(_BV(I2C_RESET) | _BV(I2C_OUTPUT_ENABLE));
-	DDRB |= _BV(I2C_RESET) | _BV(I2C_OUTPUT_ENABLE);
-	_delay_us(1);
-	PORTB &= ~(_BV(I2C_OUTPUT_ENABLE));
-	PORTB |= _BV(I2C_RESET);
-	_delay_us(1);
-
 
 	i2cBuf[0] = I2C_XIO1_ADDRESS;
 	i2cBuf[1] = 0x80 | 0x18;  // 0x80 is auto-increment
@@ -326,7 +317,21 @@ void xioInitialize()
 	i2cBuf[6] = 0xFF;
 	i2c_transmit(i2cBuf, 7, 1);
 	while(i2c_busy());
+}
 
+void xioInitialize()
+{
+	events |= EVENT_I2C_ERROR;
+
+	PORTB &= ~(_BV(I2C_RESET) | _BV(I2C_OUTPUT_ENABLE));
+	DDRB |= _BV(I2C_RESET) | _BV(I2C_OUTPUT_ENABLE);
+	_delay_us(1);
+	PORTB &= ~(_BV(I2C_OUTPUT_ENABLE));
+	PORTB |= _BV(I2C_RESET);
+	_delay_us(1);
+
+	xioDirectionSet();
+	
 	if (i2c_transaction_successful())
 	{
 		buttonLockout = 5;
@@ -763,6 +768,12 @@ int main(void)
 		if (events & EVENT_I2C_ERROR)
 			xioInitialize();
 
+		if (events & EVENT_REINIT_OUTPUTS)
+		{
+			xioDirectionSet();
+			events &= ~(EVENT_REINIT_OUTPUTS);
+		}
+
 		if(events & (EVENT_READ_INPUTS))
 		{
 			uint8_t delta;
@@ -816,7 +827,7 @@ int main(void)
 
 		// Vital Logic
 		vitalLogic();
-	
+
 		// Send output
 		if (events & EVENT_WRITE_OUTPUTS)
 		{
