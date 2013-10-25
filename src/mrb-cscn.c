@@ -181,11 +181,17 @@ uint8_t PktDirToClearance(uint8_t pktDir)
 // If you do remove it, be sure to yank the interrupt handler and ticks/secs as well
 // and the call to this function in the main function
 
-volatile uint8_t ticks;
+
+#define XIO_RESET_TIMEOUT 50
+
+volatile uint8_t ticks = 0;
 volatile uint16_t decisecs=0;
+volatile uint8_t xioDirectionResetTimeout=20;
 uint16_t update_decisecs=10;
 volatile uint8_t blinkyCounter = 0;
 volatile uint8_t buttonLockout=5;
+
+uint8_t i2cResetCounter = 0;
 
 void initialize100HzTimer(void)
 {
@@ -219,6 +225,13 @@ ISR(TIMER0_COMPA_vect)
 			buttonLockout--;
 
 		events |= EVENT_WRITE_OUTPUTS;
+		
+		if (XIO_RESET_TIMEOUT && (--xioDirectionResetTimeout == 0))
+		{
+			xioDirectionResetTimeout = XIO_RESET_TIMEOUT;
+			events |= EVENT_REINIT_OUTPUTS;
+		}
+		
 	}
 }
 
@@ -346,15 +359,15 @@ void xioOutputWrite()
 
 	while(i2c_busy());
 
+	if (!i2c_transaction_successful())
+		events |= EVENT_I2C_ERROR;
+
 	i2cBuf[0] = I2C_XIO1_ADDRESS;
 	i2cBuf[1] = 0x80 | 0x08;  // 0x80 is auto-increment
 	for(i=0; i<sizeof(xio1Outputs); i++)
 		i2cBuf[2+i] = xio1Outputs[i];
 
 	i2c_transmit(i2cBuf, 2+sizeof(xio1Outputs), 1);
-
-	if (!i2c_transaction_successful())
-		events |= EVENT_I2C_ERROR;
 }
 
 void xioInputRead()
@@ -366,6 +379,9 @@ void xioInputRead()
 		return;
 
 	while(i2c_busy());
+
+	if (!i2c_transaction_successful())
+		events |= EVENT_I2C_ERROR;
 
 	i2cBuf[0] = I2C_XIO1_ADDRESS;
 	i2cBuf[1] = 0x80 | 0x03;  // 0x80 is auto-increment, 0x03 is the first register with inputs
@@ -766,7 +782,10 @@ int main(void)
 		// a very solid reset on things.  No I2C stuff will happen until this gets cleared
 		
 		if (events & EVENT_I2C_ERROR)
+		{
+			i2cResetCounter++;
 			xioInitialize();
+		}
 
 		if (events & EVENT_REINIT_OUTPUTS)
 		{
@@ -917,7 +936,7 @@ Byte
 		{
 			mrbus_tx_buffer[MRBUS_PKT_SRC] = mrbus_dev_addr;
 			mrbus_tx_buffer[MRBUS_PKT_DEST] = 0xFF;
-			mrbus_tx_buffer[MRBUS_PKT_LEN] = 13;			
+			mrbus_tx_buffer[MRBUS_PKT_LEN] = 14;			
 			mrbus_tx_buffer[5] = 'S';
 
 			mrbus_tx_buffer[6] = ((signalHeads[SIG_E_SIDING]<<4) & 0xF0) | (signalHeads[SIG_E_MAIN] & 0x0F);
@@ -974,6 +993,8 @@ Byte
 				mrbus_tx_buffer[12] |= MRB_STATUS_CP_VOCC_ADJOIN;
 			if (occupancy & OCC_VIRT_W_APPROACH)
 				mrbus_tx_buffer[12] |= MRB_STATUS_CP_VOCC_APPROACH;
+
+			mrbus_tx_buffer[13] = i2cResetCounter;
 
 			mrbus_state |= MRBUS_TX_PKT_READY;
 			changed = 0;
