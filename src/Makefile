@@ -1,12 +1,12 @@
 #*************************************************************************
-#Title:    MRB-AVRTEMPLATE Makefile
+#Title:    MRB-CSCN Makefile
 #Authors:  Michael Petersen <railfan@drgw.net>
 #          Nathan Holmes <maverick@drgw.net>
 #File:     MRB-AVRTEMPLATE Makefile
 #License:  GNU General Public License v3
 #
 #LICENSE:
-#    Copyright (C) 2012 Nathan Holmes and Michael Petersen
+#    Copyright (C) 2014 Nathan Holmes and Michael Petersen
 #
 #    Derived from example WinAVR project Makefile
 #
@@ -27,24 +27,75 @@
 
 BASE_NAME = mrb-cscn
 
+#DEVICE  = atmega48
+#F_CPU   = 20000000  # Hz
+#FUSE_L  = 0xD7
+#FUSE_H  = 0xD4
+#FUSE_E  = 0x00
+
+# ATmega164P 20MHz @ 5.0V
+#DEVICE  = atmega164p
+#F_CPU   = 20000000  # Hz
+#FUSE_L  = 0xD7
+#FUSE_H  = 0xD1
+#FUSE_E  = 0x04
+
+# ATmega328P 20MHz @ 5.0V
 DEVICE  = atmega328p
 F_CPU   = 20000000  # Hz
 FUSE_L  = 0xD7
 FUSE_H  = 0xD1
 FUSE_E  = 0x04
 
+# ATmega328P 12MHz @ 3.3V
+#DEVICE  = atmega328p
+#F_CPU   = 12000000  # Hz
+#FUSE_L  = 0xD7
+#FUSE_H  = 0xD1
+#FUSE_E  = 0x05
+
+# ATmega328P 3.579545MHz @ 3.3V
+#DEVICE  = atmega328p
+#F_CPU   = 3579545   # Hz
+#FUSE_L  = 0x97      # Clock output on PB0 (Debug)
+#FUSE_H  = 0xD1
+#FUSE_E  = 0x05
+
+# ATmega48 20MHz @ 5.0V
+#DEVICE  = atmega48
+#F_CPU   = 20000000  # Hz
+#FUSE_L  = 0xD7
+#FUSE_H  = 0xD4
+#FUSE_E  = 0x00
+
+# ATmega48 11.0592MHz @ 3.3V
+#DEVICE  = atmega48
+#F_CPU   = 11059200  # Hz
+#FUSE_L  = 0xD7
+#FUSE_H  = 0xD5
+#FUSE_E  = 0x00
+
+
+
 # MRBus
 DEFINES = -DMRBUS
-SRCS = $(BASE_NAME).c ../../mrbus/src/mrbus-avr.c ../../mrbus/src/mrbus-crc.c ../../libs/avr-i2c/avr-i2c-master.c
-INCS = ../../mrbus/src/mrbus.h ../../mrbus/src/mrbus-avr.h ../../libs/avr-i2c/avr-i2c-master.h
+SRCS = $(BASE_NAME).c ../../mrbus2/src/mrbus-avr.c ../../mrbus2/src/mrbus-crc.c ../../mrbus2/src/mrbus-queue.c ../../libs/avr-i2c/avr-i2c-master.c
+INCS = ../../mrbus2/src/mrbus.h ../../mrbus2/src/mrbus-avr.h ../../libs/avr-i2c/avr-i2c-master.h
 
-AVRDUDE = avrdude -c usbtiny -F -p $(DEVICE) 
+# MRBee
+#DEFINES = -DMRBEE -DMRBEE_BAUD=115200
+#SRCS = $(BASE_NAME).c ../../mrbus/src/mrbus-crc.c ../../mrbee/src/mrbee.c ../../mrbee/src/xbee.c
+#INCS = ../../mrbus/src/mrbus.h ../../mrbee/src/mrbee.h ../../mrbee/src/xbee.h
+
+AVRDUDE = avrdude -c usbtiny -p $(DEVICE) -B1
+AVRDUDE_SLOW = avrdude -c usbtiny -p $(DEVICE) -B32
 
 OBJS = ${SRCS:.c=.o}
-INCLUDES = -I. -I../../mrbus/src -I../../libs/avr-i2c/
-CFLAGS  = $(INCLUDES) -Wall -O2
+INCLUDES = -I. -I../../mrbus2/src -I../../libs/avr-i2c
+CFLAGS  = $(INCLUDES) -Wall -O2 -std=gnu99 -ffunction-sections -fdata-sections
+LDFLAGS = -Wl,-gc-sections
 
-COMPILE = avr-gcc $(DEFINES) -DF_CPU=$(F_CPU) $(CFLAGS) -mmcu=$(DEVICE)
+COMPILE = avr-gcc $(DEFINES) -DF_CPU=$(F_CPU) $(CFLAGS) $(LDFLAGS) -mmcu=$(DEVICE)
 
 # -E -dM options preprocess only and output results of #define
 #COMPILE = avr-gcc -Wall -Os -DF_CPU=$(F_CPU) $(CFLAGS) -mmcu=$(DEVICE) -E -dM
@@ -55,21 +106,29 @@ help:
 	@echo "make fuse ...... flash the fuses"
 	@echo "make program ... flash fuses and firmware"
 	@echo "make read ...... read the fuses"
+	@echo "make size ...... memory usage"
 	@echo "make clean ..... delete objects and hex file"
 	@echo "make release.... produce release tarball"
+	@echo "make terminal... open up avrdude terminal"
 
 hex: $(BASE_NAME).hex
 
 program: fuse flash
 
+terminal:
+	$(AVRDUDE_SLOW) -t
+
 # rule for programming fuse bits:
 fuse:
 	@[ "$(FUSE_H)" != "" -a "$(FUSE_L)" != "" -a "$(FUSE_E)" != "" ] || \
 		{ echo "*** Invalid Fuse values."; exit 1; }
-	$(AVRDUDE) -U hfuse:w:$(FUSE_H):m -U lfuse:w:$(FUSE_L):m -U efuse:w:$(FUSE_E):m
+	$(AVRDUDE_SLOW) -U hfuse:w:$(FUSE_H):m -U lfuse:w:$(FUSE_L):m -U efuse:w:$(FUSE_E):m
 
 read:
 	$(AVRDUDE) -v
+
+size:
+	avr-size -C --mcu=$(DEVICE) $(BASE_NAME).elf
 
 # rule for uploading firmware:
 flash: $(BASE_NAME).hex
