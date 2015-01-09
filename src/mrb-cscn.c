@@ -1,11 +1,11 @@
 /*************************************************************************
-Title:    MRBus AVR Template
+Title:    MRBus CTC Siding Control Node
 Authors:  Nathan D. Holmes <maverick@drgw.net>
 File:     $Id: $
 License:  GNU General Public License v3
 
 LICENSE:
-    Copyright (C) 2012 Nathan Holmes
+    Copyright (C) 2014 Nathan Holmes
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -265,8 +265,16 @@ void init(void)
 	uint8_t i;
 	// Clear watchdog
 	MCUSR = 0;
+#ifdef ENABLE_WATCHDOG
+	// If you don't want the watchdog to do system reset, remove this chunk of code
+	wdt_reset();
+	WDTCSR |= _BV(WDE) | _BV(WDCE);
+	WDTCSR = _BV(WDE) | _BV(WDP2) | _BV(WDP1); // Set the WDT to system reset and 1s timeout
+	wdt_reset();
+#else
 	wdt_reset();
 	wdt_disable();
+#endif	
 
 	// Initialize MRBus address from EEPROM address 1
 	mrbus_dev_addr = eeprom_read_byte((uint8_t*)MRBUS_EE_DEVICE_ADDR);
@@ -281,7 +289,6 @@ void init(void)
 		| (((uint16_t)eeprom_read_byte((uint8_t*)MRBUS_EE_DEVICE_UPDATE_H)) << 8);
 
 	update_decisecs = max(1, update_decisecs);
-
 
 	// Setup ADC for bus voltage monitoring
 	ADMUX  = 0x46;  // AVCC reference; ADC6 input
@@ -1113,6 +1120,11 @@ void PktHandler(void)
 
 		case 'W':
 			// EEPROM WRITE Packet
+
+			// EEPROM Write packets must be directed at us and us only
+			if (rxBuffer[MRBUS_PKT_DEST] != mrbus_dev_addr)
+				goto PktIgnore;
+			
 			txBuffer[MRBUS_PKT_DEST] = rxBuffer[MRBUS_PKT_SRC];
 			txBuffer[MRBUS_PKT_LEN] = 8;			
 			txBuffer[MRBUS_PKT_TYPE] = 'w';
