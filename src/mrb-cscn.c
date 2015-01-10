@@ -43,7 +43,6 @@ volatile uint8_t events = 0;
 
 #define EVENT_READ_INPUTS    0x01
 #define EVENT_WRITE_OUTPUTS  0x02
-#define EVENT_REINIT_OUTPUTS 0x04
 #define EVENT_I2C_ERROR      0x40
 #define EVENT_BLINKY         0x80
 
@@ -183,11 +182,8 @@ uint8_t PktDirToClearance(uint8_t pktDir)
 // and the call to this function in the main function
 
 
-#define XIO_RESET_TIMEOUT 50
-
 volatile uint8_t ticks = 0;
 volatile uint16_t decisecs=0;
-volatile uint8_t xioDirectionResetTimeout=20;
 uint16_t update_decisecs=10;
 volatile uint8_t blinkyCounter = 0;
 volatile uint8_t buttonLockout=5;
@@ -226,13 +222,6 @@ ISR(TIMER0_COMPA_vect)
 			buttonLockout--;
 
 		events |= EVENT_WRITE_OUTPUTS;
-		
-		if (XIO_RESET_TIMEOUT && (--xioDirectionResetTimeout == 0))
-		{
-			xioDirectionResetTimeout = XIO_RESET_TIMEOUT;
-			events |= EVENT_REINIT_OUTPUTS;
-		}
-		
 	}
 }
 
@@ -364,7 +353,8 @@ void xioOutputWrite()
 	uint8_t i2cBuf[8];
 	uint8_t i;
 
-	while(i2c_busy());
+	// Reset the direction, in case noise killed us somehow
+	xioDirectionSet();
 
 	if (!i2c_transaction_successful())
 		events |= EVENT_I2C_ERROR;
@@ -797,12 +787,6 @@ int main(void)
 			xioInitialize();
 		}
 
-		if (events & EVENT_REINIT_OUTPUTS)
-		{
-			xioDirectionSet();
-			events &= ~(EVENT_REINIT_OUTPUTS);
-		}
-
 		if(events & (EVENT_READ_INPUTS))
 		{
 			uint8_t delta;
@@ -890,10 +874,13 @@ int main(void)
 
 		if (changed)
 		{
-			if (decisecs > update_decisecs)
-				decisecs -= update_decisecs;
-			else
-				decisecs = 0;
+			ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+			{
+				if (decisecs > update_decisecs)
+					decisecs -= update_decisecs;
+				else
+					decisecs = 0;
+			}
 		}
 		/* If we need to send a packet and we're not already busy... */
 
