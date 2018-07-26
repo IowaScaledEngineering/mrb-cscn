@@ -27,19 +27,6 @@
 
 BASE_NAME = mrb-cscn
 
-#DEVICE  = atmega48
-#F_CPU   = 20000000  # Hz
-#FUSE_L  = 0xD7
-#FUSE_H  = 0xD4
-#FUSE_E  = 0x00
-
-# ATmega164P 20MHz @ 5.0V
-#DEVICE  = atmega164p
-#F_CPU   = 20000000  # Hz
-#FUSE_L  = 0xD7
-#FUSE_H  = 0xD1
-#FUSE_E  = 0x04
-
 # ATmega328P 20MHz @ 5.0V
 DEVICE  = atmega328p
 F_CPU   = 20000000  # Hz
@@ -47,51 +34,24 @@ FUSE_L  = 0xD7
 FUSE_H  = 0xD1
 FUSE_E  = 0x04
 
-# ATmega328P 12MHz @ 3.3V
-#DEVICE  = atmega328p
-#F_CPU   = 12000000  # Hz
-#FUSE_L  = 0xD7
-#FUSE_H  = 0xD1
-#FUSE_E  = 0x05
+GITREV := 'GIT_REV=0x$(shell git rev-parse --short=6 HEAD)L'
 
-# ATmega328P 3.579545MHz @ 3.3V
-#DEVICE  = atmega328p
-#F_CPU   = 3579545   # Hz
-#FUSE_L  = 0x97      # Clock output on PB0 (Debug)
-#FUSE_H  = 0xD1
-#FUSE_E  = 0x05
-
-# ATmega48 20MHz @ 5.0V
-#DEVICE  = atmega48
-#F_CPU   = 20000000  # Hz
-#FUSE_L  = 0xD7
-#FUSE_H  = 0xD4
-#FUSE_E  = 0x00
-
-# ATmega48 11.0592MHz @ 3.3V
-#DEVICE  = atmega48
-#F_CPU   = 11059200  # Hz
-#FUSE_L  = 0xD7
-#FUSE_H  = 0xD5
-#FUSE_E  = 0x00
-
-
+MRBUS_DIRECTORY=./mrbus/src
+I2CLIB_DIRECTORY=./avr-i2c
+#PROGRAMMER_TYPE=avrispmkii
+PROGRAMMER_TYPE=iseavrprog
+PROGRAMMER_PORT=usb
 
 # MRBus
-DEFINES = -DMRBUS
-SRCS = $(BASE_NAME).c ../../mrbus2/src/mrbus-avr.c ../../mrbus2/src/mrbus-crc.c ../../mrbus2/src/mrbus-queue.c ../../libs/avr-i2c/avr-i2c-master.c
-INCS = ../../mrbus2/src/mrbus.h ../../mrbus2/src/mrbus-avr.h ../../libs/avr-i2c/avr-i2c-master.h
+DEFINES = -DMRBUS -D$(GITREV) -DI2C_FREQ=400000
+SRCS = mrb-cscn.c busvoltage.c $(MRBUS_DIRECTORY)/mrbus-avr.c $(MRBUS_DIRECTORY)/mrbus-crc.c $(MRBUS_DIRECTORY)/mrbus-queue.c $(I2CLIB_DIRECTORY)/avr-i2c-master.c
+INCS = $(MRBUS_DIRECTORY)/mrbus.h $(MRBUS_DIRECTORY)/mrbus-avr.h $(I2CLIB_DIRECTORY)/avr-i2c-master.h
 
-# MRBee
-#DEFINES = -DMRBEE -DMRBEE_BAUD=115200
-#SRCS = $(BASE_NAME).c ../../mrbus/src/mrbus-crc.c ../../mrbee/src/mrbee.c ../../mrbee/src/xbee.c
-#INCS = ../../mrbus/src/mrbus.h ../../mrbee/src/mrbee.h ../../mrbee/src/xbee.h
-
-AVRDUDE = avrdude -c usbtiny -p $(DEVICE) -B1
-AVRDUDE_SLOW = avrdude -c usbtiny -p $(DEVICE) -B32
+AVRDUDE = avrdude -P $(PROGRAMMER_PORT) -c $(PROGRAMMER_TYPE) -p $(DEVICE) -B1 -F
+AVRDUDE_SLOW = avrdude -P $(PROGRAMMER_PORT) -c $(PROGRAMMER_TYPE) -p $(DEVICE) -B32 -F
 
 OBJS = ${SRCS:.c=.o}
-INCLUDES = -I. -I../../mrbus2/src -I../../libs/avr-i2c
+INCLUDES = -I. -I$(MRBUS_DIRECTORY) -I$(I2CLIB_DIRECTORY)
 CFLAGS  = $(INCLUDES) -Wall -O2 -std=gnu99 -ffunction-sections -fdata-sections
 LDFLAGS = -Wl,-gc-sections
 
@@ -101,6 +61,7 @@ COMPILE = avr-gcc $(DEFINES) -DF_CPU=$(F_CPU) $(CFLAGS) $(LDFLAGS) -mmcu=$(DEVIC
 #COMPILE = avr-gcc -Wall -Os -DF_CPU=$(F_CPU) $(CFLAGS) -mmcu=$(DEVICE) -E -dM
 
 help:
+	@echo "make setup...... init/update git submodules"
 	@echo "make hex ....... build $(BASE_NAME).hex"
 	@echo "make flash ..... flash the firmware"
 	@echo "make fuse ...... flash the fuses"
@@ -108,8 +69,11 @@ help:
 	@echo "make read ...... read the fuses"
 	@echo "make size ...... memory usage"
 	@echo "make clean ..... delete objects and hex file"
-	@echo "make release.... produce release tarball"
 	@echo "make terminal... open up avrdude terminal"
+
+setup:
+	git submodule init
+	git submodule update
 
 hex: $(BASE_NAME).hex
 
@@ -171,46 +135,4 @@ disasm:	$(BASE_NAME).elf
 
 PWD := $(shell pwd)
 
-release: hex
-	@echo -n "Creating temporary build directories..."
-	@$(eval BTMPDIR := $(shell mktemp -d))
-	@$(eval TMPDIR := $(BTMPDIR)/$(BASE_NAME))
-	@$(eval BOILERPLATE_FILES := $(shell find ../../docs/release-boilerplate -type f -name *.txt -print))
-	@$(eval RELEASE_TIME := $(shell date +"%d%b%Y-%H%Mh"))
-	@mkdir -p $(TMPDIR)/mrbus/src
-	@mkdir -p $(TMPDIR)/$(BASE_NAME)/src
-	@echo "  [done]"
 
-	@echo -n "Copying boilerplate files..."
-	@cp $(BOILERPLATE_FILES) $(TMPDIR)
-	@echo "  [done]"
-
-	@echo -n "Copying Makefile..."
-	@cp Makefile $(TMPDIR)/$(BASE_NAME)/src/Makefile
-
-	@echo -n "Copying object..."
-	@cp $(BASE_NAME).hex $(TMPDIR)/$(BASE_NAME)/src/$(BASE_NAME).hex
-	@echo "  [done]"
-
-	@echo -n "Copying source files..."
-	@tar cPf - $(INCS) | tar xPf - -C $(TMPDIR)/$(BASE_NAME)/src/
-	@echo "  [done]"
-
-	@echo -n "Copying include files..."
-	@tar cPf - $(SRCS) | tar xPf - -C $(TMPDIR)/$(BASE_NAME)/src/
-	@echo "  [done]"
-
-	@echo -n "Writing file SVN statuses..."
-	@echo "### Archive built at $(RELEASE_TIME)" > $(TMPDIR)/$(BASE_NAME)/src/FILE_SVN_VERSIONS
-	@svn status -v $(BOILERPLATE_FILES) >> $(TMPDIR)/$(BASE_NAME)/src/FILE_SVN_VERSIONS
-	@svn status -v Makefile >> $(TMPDIR)/$(BASE_NAME)/src/FILE_SVN_VERSIONS
-	@svn status -v $(INCS) >> $(TMPDIR)/$(BASE_NAME)/src/FILE_SVN_VERSIONS
-	@svn status -v $(SRCS) >> $(TMPDIR)/$(BASE_NAME)/src/FILE_SVN_VERSIONS
-	@echo "  [done]"
-	
-
-	@echo -n "Creating tarball..."
-	@tar zcf $(BASE_NAME)-$(RELEASE_TIME).tgz -C $(BTMPDIR) $(BASE_NAME)
-	@echo "  [done]"
-
-	@echo "Release in $(BASE_NAME)-$(RELEASE_TIME).tgz"

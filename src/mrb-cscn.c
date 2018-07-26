@@ -29,6 +29,8 @@ LICENSE:
 
 #include "mrbus.h"
 #include "avr-i2c-master.h"
+#include "busvoltage.h"
+
 
 void PktHandler(void);
 
@@ -227,27 +229,6 @@ ISR(TIMER0_COMPA_vect)
 
 // End of 100Hz timer
 
-// Bus voltage monitor
-
-volatile uint8_t busVoltage=0;
-
-ISR(ADC_vect)
-{
-	static uint16_t busVoltageAccum=0;
-	static uint8_t busVoltageCount=0;
-
-	busVoltageAccum += ADC;
-	if (++busVoltageCount >= 64)
-	{
-		busVoltageAccum = busVoltageAccum / 64;
-        //At this point, we're at (Vbus/6) / 5 * 1024
-        //So multiply by 300, divide by 1024, or multiply by 150 and divide by 512
-        busVoltage = ((uint32_t)busVoltageAccum * 150) / 512;
-		busVoltageAccum = 0;
-		busVoltageCount = 0;
-	}
-}
-
 
 void init(void)
 {
@@ -280,13 +261,7 @@ void init(void)
 	update_decisecs = max(1, update_decisecs);
 
 	// Setup ADC for bus voltage monitoring
-	ADMUX  = 0x46;  // AVCC reference; ADC6 input
-	ADCSRA = _BV(ADATE) | _BV(ADIF) | _BV(ADPS2) | _BV(ADPS1); // 128 prescaler
-	ADCSRB = 0x00;
-	DIDR0  = 0x00;  // No digitals were harmed in the making of this ADC
-
-	busVoltage = 0;
-	ADCSRA |= _BV(ADEN) | _BV(ADSC) | _BV(ADIE) | _BV(ADIF);
+	busVoltageMonitorInit();
 
 	// Initialize signals and such
 	for(i=0; i<sizeof(debounced_inputs); i++)
@@ -494,7 +469,7 @@ void SetClearance(uint8_t controlPoint, uint8_t newClear)
 void CodeCTCRoute(uint8_t controlPoint, uint8_t newPoints, uint8_t newClear)
 {
 	SetClearance(controlPoint, newClear);
-	SetTurnout(controlPoint, newPoints);						
+	SetTurnout(controlPoint, newPoints);
 }
 
 
@@ -516,20 +491,22 @@ typedef struct
 	const uint8_t signalHead;
 	const uint8_t redByte;
 	const uint8_t redMask;
+	const uint8_t yellowByte;
+	const uint8_t yellowMask;
 	const uint8_t greenByte;
 	const uint8_t greenMask;
 } SignalPinDefinition;
 
 const SignalPinDefinition sigPinDefs[8] = 
 {
-	{SIG_W_PNTS_UPPER, 0, _BV(0), 0, _BV(1)},
-	{SIG_W_PNTS_LOWER, 0, _BV(2), 0, _BV(3)},
-	{SIG_W_MAIN      , 0, _BV(4), 0, _BV(5)},
-	{SIG_W_SIDING    , 0, _BV(6), 0, _BV(7)},
-	{SIG_E_PNTS_UPPER, 1, _BV(0), 1, _BV(1)},
-	{SIG_E_PNTS_LOWER, 1, _BV(2), 1, _BV(3)},
-	{SIG_E_MAIN      , 1, _BV(4), 1, _BV(5)},
-	{SIG_E_SIDING    , 1, _BV(6), 1, _BV(7)}
+	{SIG_W_PNTS_UPPER, 0, _BV(0), 0, _BV(1), 0, _BV(2)},
+	{SIG_W_PNTS_LOWER, 0, _BV(3), 0, _BV(4), 0, _BV(5)},
+	{SIG_W_MAIN      , 0, _BV(6), 0, _BV(7), 1, _BV(0)},
+	{SIG_W_SIDING    , 1, _BV(1), 1, _BV(2), 1, _BV(3)},
+	{SIG_E_PNTS_UPPER, 1, _BV(4), 1, _BV(5), 1, _BV(6)},
+	{SIG_E_PNTS_LOWER, 1, _BV(7), 2, _BV(0), 2, _BV(1)},
+	{SIG_E_MAIN      , 2, _BV(2), 2, _BV(3), 2, _BV(4)},
+	{SIG_E_SIDING    , 2, _BV(5), 2, _BV(6), 2, _BV(7)}
 };
 
 void SignalsToOutputs()
@@ -539,11 +516,14 @@ void SignalsToOutputs()
 	{
 		uint8_t redByte = sigPinDefs[sigDefIdx].redByte;
 		uint8_t redMask = sigPinDefs[sigDefIdx].redMask;
+		uint8_t yellowByte = sigPinDefs[sigDefIdx].yellowByte;
+		uint8_t yellowMask = sigPinDefs[sigDefIdx].yellowMask;
 		uint8_t greenByte = sigPinDefs[sigDefIdx].greenByte;
 		uint8_t greenMask = sigPinDefs[sigDefIdx].greenMask;
 
-		xio1Outputs[redByte] &= ~(redMask);
-		xio1Outputs[greenByte] &= ~(greenMask);
+		xio1Outputs[redByte] |= redMask;
+		xio1Outputs[yellowByte] |= yellowMask;
+		xio1Outputs[greenByte] |= greenMask;
 
 		switch(signalHeads[sigPinDefs[sigDefIdx].signalHead])
 		{
@@ -551,37 +531,33 @@ void SignalsToOutputs()
 				break;
 		
 			case ASPECT_GREEN:
-				xio1Outputs[greenByte] |= greenMask;
+				xio1Outputs[greenByte] &= ~greenMask;
 				break;
 		
 			case ASPECT_FL_GREEN:
 				if (events & EVENT_BLINKY)
-					xio1Outputs[greenByte] |= greenMask;
+					xio1Outputs[greenByte] &= ~greenMask;
 				break;
 
 			case ASPECT_YELLOW:
-				xio1Outputs[redByte] |= redMask;
-				xio1Outputs[greenByte] |= greenMask;		
+				xio1Outputs[yellowByte] &= ~yellowMask;
 				break;
 		
 			case ASPECT_FL_YELLOW:
 				if (events & EVENT_BLINKY)
-				{
-					xio1Outputs[redByte] |= redMask;
-					xio1Outputs[greenByte] |= greenMask;
-				}
+					xio1Outputs[yellowByte] &= ~yellowMask;
 				break;
 		
 		
 			case ASPECT_RED:
 			case ASPECT_LUNAR: // Can't display, so make like red
 			default:
-				xio1Outputs[redByte] |= redMask;			
+				xio1Outputs[redByte] &= ~redMask;
 				break;
 
 			case ASPECT_FL_RED:
 				if (events & EVENT_BLINKY)
-					xio1Outputs[redByte] |= redMask;
+					xio1Outputs[redByte] &= ~redMask;
 				break;
 		}
 	}
@@ -590,9 +566,9 @@ void SignalsToOutputs()
 static inline void vitalLogic()
 {
 	uint8_t eastTurnoutLocked = (!(((turnouts & (E_PNTS_STATUS))?1:0) ^ ((turnouts & (E_PNTS_CNTL))?1:0)));
-	uint8_t westTurnoutLocked = (!(((turnouts & (W_PNTS_STATUS))?1:0) ^ ((turnouts & (W_PNTS_CNTL))?1:0)));	
+	uint8_t westTurnoutLocked = (!(((turnouts & (W_PNTS_STATUS))?1:0) ^ ((turnouts & (W_PNTS_CNTL))?1:0)));
 	uint8_t eastCleared = CLEARANCE_NONE;
-	uint8_t westCleared = CLEARANCE_NONE;	
+	uint8_t westCleared = CLEARANCE_NONE;
 
 	// Start out with a safe default - everybody red
 	signalHeads[SIG_E_PNTS_UPPER] = ASPECT_RED;
@@ -661,7 +637,6 @@ static inline void vitalLogic()
 	}
 	// The else case is that the turnout isn't locked up or we're not cleared
 	// Good news - the signals are already defaulted to red
-
 
 	if (westTurnoutLocked && CLEARANCE_WEST == westCleared)
 	{
@@ -756,8 +731,7 @@ int main(void)
 
 	wdt_enable(WDTO_1S);
 
-	// Initialize a 100 Hz timer.  See the definition for this function - you can
-	// remove it if you don't use it.
+	// Initialize a 100 Hz timer. 
 	initialize100HzTimer();
 
 	// Initialize MRBus core
@@ -1084,18 +1058,11 @@ void PktHandler(void)
 
 		case 'C':
 			// CTC Command
-			// There are two forms of this - the 8/10 byte packet (old school) and the 9 byte packet (new)
-			// Old school implied the east control point.  New specifies the CP number in the first byte
-			if (8 == rxBuffer[MRBUS_PKT_LEN] || 10 == rxBuffer[MRBUS_PKT_LEN])
-				CodeCTCRoute(E_CONTROLPOINT, rxBuffer[6], PktDirToClearance(rxBuffer[7]));
-			else
-				CodeCTCRoute(rxBuffer[6], rxBuffer[7], PktDirToClearance(rxBuffer[8]));
-			goto PktIgnore;
-
-		case 'B':
-			// CTC Command
-			// B is the old school variant of C for the western control point
-			CodeCTCRoute(W_CONTROLPOINT, rxBuffer[6], PktDirToClearance(rxBuffer[7]));
+			// The data elements are:
+			//  6 - Control point being manipulated
+			//  7 - Turnout normal/reverse
+			//  8 - Clear eastbound or westbound
+			CodeCTCRoute(rxBuffer[6], rxBuffer[7], PktDirToClearance(rxBuffer[8]));
 			goto PktIgnore;
 
 		case 'T':
