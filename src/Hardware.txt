@@ -3,7 +3,7 @@ other hardware pieces to make it work.  Specifically, it expects:
 
 - an Awesome Stick as a core (MRB-IAS)
 - an MRB-XIO to do the signal, switch, and turnout I/O
-- a BD-4X tied into XIO ports A0-A3
+
 
 
 Pin assignment for the XIO:
@@ -35,12 +35,12 @@ C5 - East Siding Signal Red
 C6 - East Siding Signal Yellow
 C7 - East Siding Signal Green
 
-D0 - East Turnout Timelock LED
-D1 - West Turnout Timelock LED
+D0 - East Turnout Timelock LED (+5V = LED on)
+D1 - West Turnout Timelock LED (+5V = LED on)
 D2 - n/c
 D3 - n/c
-D4 - East Turnout Control (low = Normal)
-D5 - West Turnout Control (low = Normal)
+D4 - East Turnout Control (+5V = Normal unless reversed in options)
+D5 - West Turnout Control (+5V = Normal unless reversed in options)
 D6 - East Turnout Position (low = Normal)
 D7 - West Turnout Position (low = Normal)
 

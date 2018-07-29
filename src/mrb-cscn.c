@@ -32,6 +32,16 @@ LICENSE:
 #include "busvoltage.h"
 
 
+typedef enum
+{
+	STATE_LOCKED = 0,
+	STATE_TIMERUN = 1,
+	STATE_UNLOCKED = 2,
+	STATE_RELOCKING = 3
+} turnoutState_t;
+
+turnoutState_t eastTurnoutState = STATE_LOCKED;
+turnoutState_t westTurnoutState = STATE_LOCKED;
 
 void PktHandler(void);
 
@@ -646,7 +656,21 @@ static inline void vitalLogic()
 	eastCleared = GetClearance(E_CONTROLPOINT);
 	westCleared = GetClearance(W_CONTROLPOINT);
 	
-	if (eastTurnoutLocked && CLEARANCE_EAST == eastCleared)
+	if (STATE_UNLOCKED == eastTurnoutState || STATE_RELOCKING == eastTurnoutState)
+	{
+
+		if(turnouts & (E_PNTS_STATUS))
+		{
+			signalHeads[SIG_E_PNTS_LOWER] = ASPECT_FL_RED;
+			signalHeads[SIG_E_SIDING] = ASPECT_FL_RED;
+		}
+		else
+		{
+			signalHeads[SIG_E_PNTS_UPPER] = ASPECT_FL_RED;
+			signalHeads[SIG_E_MAIN] = ASPECT_FL_RED;
+		}
+	} 
+	else if (eastTurnoutLocked && CLEARANCE_EAST == eastCleared)
 	{
 		// Eastbound clearance at the east control point means frog->points movement direction
 		uint8_t head = (turnouts & (E_PNTS_STATUS))?SIG_E_SIDING:SIG_E_MAIN;
@@ -694,7 +718,20 @@ static inline void vitalLogic()
 	// The else case is that the turnout isn't locked up or we're not cleared
 	// Good news - the signals are already defaulted to red
 
-	if (westTurnoutLocked && CLEARANCE_WEST == westCleared)
+	if (STATE_UNLOCKED == westTurnoutState || STATE_RELOCKING == westTurnoutState)
+	{
+		if(turnouts & (W_PNTS_STATUS))
+		{
+			signalHeads[SIG_W_PNTS_LOWER] = ASPECT_FL_RED;
+			signalHeads[SIG_W_SIDING] = ASPECT_FL_RED;
+		}
+		else
+		{
+			signalHeads[SIG_W_MAIN] = ASPECT_FL_RED;
+			signalHeads[SIG_W_PNTS_UPPER] = ASPECT_FL_RED;
+		}
+	} 
+	else if (westTurnoutLocked && CLEARANCE_WEST == westCleared)
 	{
 		// Eastbound clearance at the east control point means frog->points movement direction
 		uint8_t head = (turnouts & (W_PNTS_STATUS))?SIG_W_SIDING:SIG_W_MAIN;
@@ -748,12 +785,12 @@ static inline void vitalLogic()
 	if(!(((turnouts & (E_PNTS_STATUS))?1:0) ^ ((turnouts & (E_PNTS_CNTL))?1:0)))
 	{
 		// Turnout is properly lined one way or the other
-		if ((turnouts & E_PNTS_STATUS) && (ASPECT_RED == signalHeads[SIG_W_SIDING]))
+		if ((turnouts & E_PNTS_STATUS) && ( (ASPECT_RED == signalHeads[SIG_W_SIDING] || ASPECT_FL_RED == signalHeads[SIG_W_SIDING])))
 			occupancy |= OCC_VIRT_E_APPROACH;
-		else if ((!(turnouts & E_PNTS_STATUS)) && (ASPECT_RED == signalHeads[SIG_W_MAIN]))
+		else if ((!(turnouts & E_PNTS_STATUS)) && (ASPECT_RED == signalHeads[SIG_W_MAIN] || ASPECT_FL_RED == signalHeads[SIG_W_MAIN]))
 			occupancy |= OCC_VIRT_E_APPROACH;
 	
-		if (ASPECT_RED == signalHeads[SIG_E_PNTS_LOWER] && ASPECT_RED == signalHeads[SIG_E_PNTS_UPPER])
+		if (ASPECT_RED == signalHeads[SIG_E_PNTS_LOWER] && (ASPECT_RED == signalHeads[SIG_E_PNTS_UPPER] || ASPECT_FL_RED == signalHeads[SIG_E_PNTS_UPPER]))
 			occupancy |= OCC_VIRT_E_ADJOIN;
 	} else {
 		// East Control Point improperly lined, trip virtual occupancy
@@ -764,12 +801,12 @@ static inline void vitalLogic()
 	if(!(((turnouts & (W_PNTS_STATUS))?1:0) ^ ((turnouts & (W_PNTS_CNTL))?1:0)))
 	{
 		// Turnout is properly lined one way or the other
-		if ((turnouts & W_PNTS_STATUS) && (ASPECT_RED == signalHeads[SIG_E_SIDING]))
+		if ((turnouts & W_PNTS_STATUS) && ( (ASPECT_RED == signalHeads[SIG_E_SIDING] || ASPECT_FL_RED == signalHeads[SIG_E_SIDING]) ))
 			occupancy |= OCC_VIRT_W_APPROACH;
-		else if ((!(turnouts & W_PNTS_STATUS)) && (ASPECT_RED == signalHeads[SIG_E_MAIN]))
+		else if ((!(turnouts & W_PNTS_STATUS)) && (ASPECT_RED == signalHeads[SIG_E_MAIN] || ASPECT_FL_RED == signalHeads[SIG_E_MAIN]))
 			occupancy |= OCC_VIRT_W_APPROACH;
 	
-		if (ASPECT_RED == signalHeads[SIG_W_PNTS_LOWER] && ASPECT_RED == signalHeads[SIG_W_PNTS_UPPER])
+		if (ASPECT_RED == signalHeads[SIG_W_PNTS_LOWER] && (ASPECT_RED == signalHeads[SIG_W_PNTS_UPPER] || ASPECT_FL_RED == signalHeads[SIG_W_PNTS_UPPER]))
 			occupancy |= OCC_VIRT_W_ADJOIN;
 	} else {
 		// West Control Point improperly lined, trip virtual occupancy
@@ -777,24 +814,11 @@ static inline void vitalLogic()
 	}	
 }
 
-typedef enum
-{
-	STATE_LOCKED = 0,
-	STATE_TIMERUN = 1,
-	STATE_UNLOCKED = 2,
-	STATE_RELOCKING = 3
-} turnoutState_t;
-
-turnoutState_t eastTurnoutState = STATE_LOCKED;
-turnoutState_t westTurnoutState = STATE_LOCKED;
-
 int main(void)
 {
 	uint8_t changed = 0;
 	uint8_t i;
-	
 
-	
 	// Application initialization
 	init();
 
@@ -855,6 +879,7 @@ int main(void)
 					{
 						eastTimeCounter = eeprom_read_byte((uint8_t*)EE_UNLOCK_TIME);
 						eastTurnoutState = STATE_TIMERUN;
+						CodeCTCRoute(E_CONTROLPOINT, POINTS_UNAFFECTED, CLEARANCE_NONE);
 					} else {
 						xio1Outputs[3] &= ~(E_PNTS_TIMELOCK_LED);
 					}
@@ -908,6 +933,7 @@ int main(void)
 					{
 						westTimeCounter = eeprom_read_byte((uint8_t*)EE_UNLOCK_TIME);
 						westTurnoutState = STATE_TIMERUN;
+						CodeCTCRoute(W_CONTROLPOINT, POINTS_UNAFFECTED, CLEARANCE_NONE);
 					} else {
 						xio1Outputs[3] &= ~(W_PNTS_TIMELOCK_LED);
 					}
