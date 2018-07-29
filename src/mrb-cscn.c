@@ -478,6 +478,20 @@ void SetTurnout(uint8_t controlPoint, uint8_t points)
 	}
 }
 
+uint8_t GetTurnout(uint8_t controlPoint)
+{
+	switch(controlPoint)
+	{
+		case E_CONTROLPOINT:
+			return ((turnouts & E_PNTS_CNTL)?1:0);
+
+		case W_CONTROLPOINT:
+			return ((turnouts & W_PNTS_CNTL)?1:0);
+	}
+
+	return(CLEARANCE_NONE);
+}
+
 uint8_t GetClearance(uint8_t controlPoint)
 {
 	switch(controlPoint)
@@ -488,7 +502,6 @@ uint8_t GetClearance(uint8_t controlPoint)
 		case W_CONTROLPOINT:
 			return((clearance>>4) & 0x0F);
 	}
-
 	return(CLEARANCE_NONE);
 }
 
@@ -508,7 +521,6 @@ void SetClearance(uint8_t controlPoint, uint8_t newClear)
 					break;
 				if (OCC_E_OS_SECT & occupancy)
 					break;
-
 				// FIXME: logic to prevent the CTC ends lining into each other
 			}
 			clearance &= 0xF0;
@@ -534,6 +546,46 @@ void SetClearance(uint8_t controlPoint, uint8_t newClear)
 
 void CodeCTCRoute(uint8_t controlPoint, uint8_t newPoints, uint8_t newClear)
 {
+	uint8_t turnoutPointsRequested = 0;
+
+	// This logic prevents you from lining the ends into each other
+	switch(newPoints)
+	{
+		case POINTS_NORMAL_FORCE:
+		case POINTS_NORMAL_SAFE:
+			turnoutPointsRequested = 0;
+			break;
+			
+		case POINTS_REVERSE_FORCE:
+		case POINTS_REVERSE_SAFE:
+			turnoutPointsRequested = 1;
+			break;
+			
+		// If the points aren't changing, then check to see how they're currently set
+		case POINTS_UNAFFECTED:
+		default:
+			if (controlPoint == E_CONTROLPOINT)
+				turnoutPointsRequested = (turnouts & E_PNTS_CNTL)?1:0;
+			else if (controlPoint == W_CONTROLPOINT)
+				turnoutPointsRequested = (turnouts & W_PNTS_CNTL)?1:0;
+	}
+	
+	switch(controlPoint)
+	{
+		case E_CONTROLPOINT:
+			if (CLEARANCE_EAST == GetClearance(W_CONTROLPOINT) 
+				&& CLEARANCE_WEST == newClear 
+				&& GetTurnout(W_CONTROLPOINT) == turnoutPointsRequested)
+				return;
+			break;
+		case W_CONTROLPOINT:
+			if (CLEARANCE_WEST == GetClearance(E_CONTROLPOINT) 
+				&& CLEARANCE_EAST == newClear 
+				&& GetTurnout(E_CONTROLPOINT) == turnoutPointsRequested)
+				return;
+			break;
+	}
+	
 	SetClearance(controlPoint, newClear);
 	SetTurnout(controlPoint, newPoints);
 }
