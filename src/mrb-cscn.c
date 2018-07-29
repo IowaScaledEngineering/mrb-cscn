@@ -32,6 +32,7 @@ LICENSE:
 #include "busvoltage.h"
 
 
+
 void PktHandler(void);
 
 #define txBuffer_DEPTH 4
@@ -48,8 +49,8 @@ volatile uint8_t events = 0;
 #define EVENT_I2C_ERROR      0x40
 #define EVENT_BLINKY         0x80
 
-#define E_CONTROLPOINT  0x01
-#define W_CONTROLPOINT  0x02
+#define E_CONTROLPOINT       0x01
+#define W_CONTROLPOINT       0x02
 
 #define CLEARANCE_NONE		0x00
 #define CLEARANCE_EAST		0x01
@@ -65,7 +66,6 @@ volatile uint8_t events = 0;
 #define OCC_CTC_SIDING			0x04
 #define OCC_E_OS_SECT			0x02
 #define OCC_W_OS_SECT			0x01
-
 #define OCC_VIRT_E_ADJOIN     0x10
 #define OCC_VIRT_E_APPROACH   0x20
 #define OCC_VIRT_W_ADJOIN     0x40
@@ -81,10 +81,13 @@ volatile uint8_t events = 0;
 #define XOCC_W_TUMBLE         0x80
 
 
-#define E_PNTS_BTTN_NORMAL  0x01
-#define E_PNTS_BTTN_REVERSE 0x02
-#define W_PNTS_BTTN_NORMAL  0x04
-#define W_PNTS_BTTN_REVERSE 0x08
+#define E_PNTS_TIMELOCK_LED   0x01
+#define W_PNTS_TIMELOCK_LED   0x02
+
+#define E_PNTS_LOCAL_DIR    0x01
+#define W_PNTS_LOCAL_DIR    0x02
+#define E_PNTS_UNLOCK       0x04
+#define W_PNTS_UNLOCK       0x08
 
 #define E_PNTS_CNTL         0x10
 #define W_PNTS_CNTL         0x20
@@ -92,6 +95,14 @@ volatile uint8_t events = 0;
 #define W_PNTS_STATUS       0x80
 
 // EEPROM Location Definitions
+
+#define EE_OPTIONS            0x08
+// 0x01 - Reverse E turnout direction
+// 0x02 - Reverse W turnout direction
+
+#define EE_UNLOCK_TIME        0x09
+// Unlock time in decisecs
+
 
 #define EE_E_APRCH_ADDR       0x10
 #define EE_E_APRCH2_ADDR      0x11
@@ -101,6 +112,10 @@ volatile uint8_t events = 0;
 #define EE_W_ADJ_ADDR         0x15
 #define EE_E_TUMBLE_ADDR      0x16
 #define EE_W_TUMBLE_ADDR      0x17
+#define EE_E_OS_ADDR          0x18
+#define EE_W_OS_ADDR          0x19
+#define EE_MAIN_ADDR          0x1A
+#define EE_SIDING_ADDR        0x1B
 
 #define EE_E_APRCH_PKT        0x20
 #define EE_E_APRCH2_PKT       0x21
@@ -110,6 +125,10 @@ volatile uint8_t events = 0;
 #define EE_W_ADJ_PKT          0x25
 #define EE_E_TUMBLE_PKT       0x26
 #define EE_W_TUMBLE_PKT       0x27
+#define EE_E_OS_PKT           0x28
+#define EE_W_OS_PKT           0x29
+#define EE_MAIN_PKT           0x2A
+#define EE_SIDING_PKT         0x2B
 
 #define EE_E_APRCH_BITBYTE    0x30
 #define EE_E_APRCH2_BITBYTE   0x31
@@ -119,6 +138,10 @@ volatile uint8_t events = 0;
 #define EE_W_ADJ_BITBYTE      0x35
 #define EE_E_TUMBLE_BITBYTE   0x36
 #define EE_W_TUMBLE_BITBYTE   0x37
+#define EE_E_OS_BITBYTE       0x38
+#define EE_W_OS_BITBYTE       0x39
+#define EE_MAIN_BITBYTE       0x3A
+#define EE_SIDING_BITBYTE     0x3B
 
 #define EE_E_APRCH_SUBTYPE    0x40
 #define EE_E_APRCH2_SUBTYPE   0x41
@@ -128,6 +151,12 @@ volatile uint8_t events = 0;
 #define EE_W_ADJ_SUBTYPE      0x45
 #define EE_E_TUMBLE_SUBTYPE   0x46
 #define EE_W_TUMBLE_SUBTYPE   0x47
+#define EE_E_OS_SUBTYPE       0x48
+#define EE_W_OS_SUBTYPE       0x49
+#define EE_MAIN_SUBTYPE       0x4A
+#define EE_SIDING_SUBTYPE     0x4B
+
+
 
 uint8_t debounced_inputs[2], old_debounced_inputs[2];
 uint8_t clearance, old_clearance;
@@ -191,6 +220,8 @@ volatile uint8_t blinkyCounter = 0;
 volatile uint8_t buttonLockout=5;
 
 uint8_t i2cResetCounter = 0;
+volatile uint8_t eastTimeCounter = 0;
+volatile uint8_t westTimeCounter = 0;
 
 void initialize100HzTimer(void)
 {
@@ -222,6 +253,13 @@ ISR(TIMER0_COMPA_vect)
 
 		if (buttonLockout != 0)
 			buttonLockout--;
+
+		if (0 != eastTimeCounter)
+			eastTimeCounter--;
+
+		if (0 != westTimeCounter)
+			westTimeCounter--;
+
 
 		events |= EVENT_WRITE_OUTPUTS;
 	}
@@ -377,7 +415,12 @@ void SetTurnout(uint8_t controlPoint, uint8_t points)
 {
 	if (POINTS_UNAFFECTED == points)
 		return;
-		
+
+// 0x01 - Reverse E turnout direction
+// 0x02 - Reverse W turnout direction
+
+	uint8_t options = eeprom_read_byte((uint8_t*)EE_OPTIONS);
+
 	switch(controlPoint)
 	{
 		case E_CONTROLPOINT:
@@ -385,13 +428,20 @@ void SetTurnout(uint8_t controlPoint, uint8_t points)
 			{
 				turnouts |= E_PNTS_CNTL;
 				// Implementation-specific behaviour - do whatever needs to happen to physically move the turnout here
-				xio1Outputs[3] |= E_PNTS_CNTL;
+				if (options & 0x01)
+					xio1Outputs[3] |= E_PNTS_CNTL;
+				else
+					xio1Outputs[3] &= ~(E_PNTS_CNTL); 
 			}
 			else if (POINTS_NORMAL_FORCE == points || (POINTS_NORMAL_SAFE == points && !(occupancy & OCC_E_OS_SECT)))
 			{
 				turnouts &= ~(E_PNTS_CNTL);
 				// Implementation-specific behaviour - do whatever needs to happen to physically move the turnout here
-				xio1Outputs[3] &= ~(E_PNTS_CNTL); 
+				if (options & 0x01)
+					xio1Outputs[3] &= ~(E_PNTS_CNTL); 
+				else
+					xio1Outputs[3] |= E_PNTS_CNTL;
+
 			}
 			break;
 
@@ -400,13 +450,19 @@ void SetTurnout(uint8_t controlPoint, uint8_t points)
 			{
 				turnouts |= W_PNTS_CNTL;
 				// Implementation-specific behaviour - do whatever needs to happen to physically move the turnout here
-				xio1Outputs[3] |= W_PNTS_CNTL;
+				if (options & 0x02)
+					xio1Outputs[3] |= W_PNTS_CNTL;
+				else
+					xio1Outputs[3] &= ~(W_PNTS_CNTL);
 			}
 			else if (POINTS_NORMAL_FORCE == points || (POINTS_NORMAL_SAFE == points && !(occupancy & OCC_W_OS_SECT)))
 			{
 				turnouts &= ~(W_PNTS_CNTL);
 				// Implementation-specific behaviour - do whatever needs to happen to physically move the turnout here
-				xio1Outputs[3] &= ~(W_PNTS_CNTL);
+				if (options & 0x02)
+					xio1Outputs[3] &= ~(W_PNTS_CNTL);
+				else
+					xio1Outputs[3] |= W_PNTS_CNTL;
 			}
 			break;
 	}
@@ -721,11 +777,24 @@ static inline void vitalLogic()
 	}	
 }
 
+typedef enum
+{
+	STATE_LOCKED = 0,
+	STATE_TIMERUN = 1,
+	STATE_UNLOCKED = 2,
+	STATE_RELOCKING = 3
+} turnoutState_t;
+
+turnoutState_t eastTurnoutState = STATE_LOCKED;
+turnoutState_t westTurnoutState = STATE_LOCKED;
 
 int main(void)
 {
 	uint8_t changed = 0;
 	uint8_t i;
+	
+
+	
 	// Application initialization
 	init();
 
@@ -742,6 +811,9 @@ int main(void)
 	sei();	
 	i2c_master_init();
 	xioInitialize();
+
+	CodeCTCRoute(E_CONTROLPOINT, POINTS_NORMAL_FORCE, CLEARANCE_NONE);
+	CodeCTCRoute(W_CONTROLPOINT, POINTS_NORMAL_FORCE, CLEARANCE_NONE);
 
 	while (1)
 	{
@@ -776,33 +848,144 @@ int main(void)
 				debounced_inputs[i] ^= ~(~delta | clock_a[i] | clock_b[i]);
 			}
 
-
-			// Manual Control Logic
-			// Note the lockouts based on time since last button
-			if (0 == buttonLockout) 
+			switch(eastTurnoutState)
 			{
-				uint8_t delta = (debounced_inputs[1] ^ old_debounced_inputs[1]) & (E_PNTS_BTTN_NORMAL | E_PNTS_BTTN_REVERSE | W_PNTS_BTTN_NORMAL | W_PNTS_BTTN_REVERSE);
-				delta &= old_debounced_inputs[1];
-			
-				if (0 != delta)
-				{
-					buttonLockout = 5;
-					// Any bit in delta that's a 1 now corresponds to a switch going low in this cycle
-					if (delta & E_PNTS_BTTN_NORMAL)
+				case STATE_LOCKED:
+					if (debounced_inputs[1] & E_PNTS_UNLOCK)
+					{
+						eastTimeCounter = eeprom_read_byte((uint8_t*)EE_UNLOCK_TIME);
+						eastTurnoutState = STATE_TIMERUN;
+					} else {
+						xio1Outputs[3] &= ~(E_PNTS_TIMELOCK_LED);
+					}
+					break;
+					
+				case STATE_TIMERUN:
+					if (events & EVENT_BLINKY)
+						xio1Outputs[3] &= ~(E_PNTS_TIMELOCK_LED);
+					else
+						xio1Outputs[3] |= E_PNTS_TIMELOCK_LED;
+
+					if (!(debounced_inputs[1] & E_PNTS_UNLOCK))
+						eastTurnoutState = STATE_LOCKED;
+
+					if (0 == eastTimeCounter)
+						eastTurnoutState = STATE_UNLOCKED;
+					break;
+					
+				case STATE_UNLOCKED:
+					// FIXME: Set turnout position here
+					xio1Outputs[3] |= E_PNTS_TIMELOCK_LED;
+					if (xio1Inputs[1] & E_PNTS_LOCAL_DIR)
 						CodeCTCRoute(E_CONTROLPOINT, POINTS_NORMAL_FORCE, CLEARANCE_NONE);
-					else if (delta & E_PNTS_BTTN_REVERSE)
+					else
 						CodeCTCRoute(E_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
+
+					if (!(debounced_inputs[1] & E_PNTS_UNLOCK))
+						eastTurnoutState = STATE_RELOCKING;
+					break;
+
+				case STATE_RELOCKING:
+					if (xio1Inputs[1] & E_PNTS_LOCAL_DIR)
+						CodeCTCRoute(E_CONTROLPOINT, POINTS_NORMAL_FORCE, CLEARANCE_NONE);
+					else
+						CodeCTCRoute(E_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
+
+					if (!(debounced_inputs[1] & E_PNTS_UNLOCK) && !(turnouts & (E_PNTS_STATUS)))
+						eastTurnoutState = STATE_LOCKED;
+
+					break;
 				
-					if (delta & W_PNTS_BTTN_NORMAL)
+				default: // No idea why we'd get here, but just in case...
+					eastTurnoutState = STATE_RELOCKING;
+					break;
+			} 
+
+			switch(westTurnoutState)
+			{
+				case STATE_LOCKED:
+					if (debounced_inputs[1] & W_PNTS_UNLOCK)
+					{
+						westTimeCounter = eeprom_read_byte((uint8_t*)EE_UNLOCK_TIME);
+						westTurnoutState = STATE_TIMERUN;
+					} else {
+						xio1Outputs[3] &= ~(W_PNTS_TIMELOCK_LED);
+					}
+					break;
+					
+				case STATE_TIMERUN:
+					if (events & EVENT_BLINKY)
+						xio1Outputs[3] &= ~(W_PNTS_TIMELOCK_LED);
+					else
+						xio1Outputs[3] |= W_PNTS_TIMELOCK_LED;
+
+					if (!(debounced_inputs[1] & W_PNTS_UNLOCK))
+						westTurnoutState = STATE_LOCKED;
+
+					if (0 == westTimeCounter)
+						westTurnoutState = STATE_UNLOCKED;
+					break;
+					
+				case STATE_UNLOCKED:
+					// FIXME: Set turnout position here
+					xio1Outputs[3] |= W_PNTS_TIMELOCK_LED;
+					if (xio1Inputs[1] & W_PNTS_LOCAL_DIR)
 						CodeCTCRoute(W_CONTROLPOINT, POINTS_NORMAL_FORCE, CLEARANCE_NONE);
-					else if (delta & W_PNTS_BTTN_REVERSE)
+					else
 						CodeCTCRoute(W_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
-				}
-			}
+
+					if (!(debounced_inputs[1] & W_PNTS_UNLOCK))
+						westTurnoutState = STATE_RELOCKING;
+					break;
+
+				case STATE_RELOCKING:
+					if (xio1Inputs[1] & W_PNTS_LOCAL_DIR)
+						CodeCTCRoute(W_CONTROLPOINT, POINTS_NORMAL_FORCE, CLEARANCE_NONE);
+					else
+						CodeCTCRoute(W_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
+
+					if (!(debounced_inputs[1] & W_PNTS_UNLOCK) && !(turnouts & (W_PNTS_STATUS)))
+						westTurnoutState = STATE_LOCKED;
+
+					break;
+				
+				default: // No idea why we'd get here, but just in case...
+					westTurnoutState = STATE_RELOCKING;
+					break;
+			} 
+
+
 		
 			// Get the physical occupancy inputs from debounced
-			occupancy &= 0xF0;
-			occupancy |= 0x0F & (debounced_inputs[1]>>4);
+			
+			// Figure out which occupancies are local or remote
+			// Local occupancies will have 0xFF in the MRBus address for source
+			uint8_t remoteOccupancyMask = 0x0F;
+			for(i=0; i<4; i++)
+			{
+				switch(i)
+				{
+					case 0:
+						if (0xFF == eeprom_read_byte((uint8_t*)(EE_E_OS_ADDR)))
+							remoteOccupancyMask &= ~OCC_E_OS_SECT;
+						break;
+					case 1:
+						if (0xFF == eeprom_read_byte((uint8_t*)(EE_W_OS_ADDR)))
+							remoteOccupancyMask &= ~OCC_W_OS_SECT;
+						break;
+					case 2:
+						if (0xFF == eeprom_read_byte((uint8_t*)(EE_MAIN_ADDR)))
+							remoteOccupancyMask &= ~OCC_CTC_MAIN;
+						break;
+					case 3:
+						if (0xFF == eeprom_read_byte((uint8_t*)(EE_SIDING_ADDR)))
+							remoteOccupancyMask &= ~OCC_CTC_SIDING;
+						break;
+				}
+			}
+
+			occupancy &= 0xF0 | remoteOccupancyMask;
+			occupancy |= (0x0F & (~remoteOccupancyMask)) & (debounced_inputs[1]>>4);
 			turnouts &= ~(E_PNTS_STATUS | W_PNTS_STATUS);
 			turnouts |= debounced_inputs[0] & (E_PNTS_STATUS | W_PNTS_STATUS);
 
@@ -892,12 +1075,15 @@ Byte
  2 - E OS not cleared
  1 - E OS cleared Westbound
  0 - E OS cleared Eastbound
+
+
  
  */
 
 #define MRB_STATUS_CP_CLEARED_EAST   0x01
 #define MRB_STATUS_CP_CLEARED_WEST   0x02
 #define MRB_STATUS_CP_CLEARED_NONE   0x04
+#define MRB_STATUS_CP_MANUAL_UNLOCK  0x08
 #define MRB_STATUS_CP_SWITCH_NORMAL  0x10
 #define MRB_STATUS_CP_SWITCH_REVERSE 0x20
 #define MRB_STATUS_CP_VOCC_ADJOIN    0x40
@@ -932,6 +1118,9 @@ Byte
 					break;
 			}
 
+			if (STATE_LOCKED != eastTurnoutState)
+				txBuffer[11] |= MRB_STATUS_CP_MANUAL_UNLOCK;
+
 			if (turnouts & E_PNTS_STATUS)  // Low is normal, high is reverse
 				txBuffer[11] |= MRB_STATUS_CP_SWITCH_REVERSE;
 			else
@@ -955,6 +1144,9 @@ Byte
 					txBuffer[12] = MRB_STATUS_CP_CLEARED_NONE;
 					break;
 			}
+			
+			if (STATE_LOCKED != westTurnoutState)
+				txBuffer[11] |= MRB_STATUS_CP_MANUAL_UNLOCK;
 
 			if (turnouts & W_PNTS_STATUS)  // Low is normal, high is reverse
 				txBuffer[12] |= MRB_STATUS_CP_SWITCH_REVERSE;
@@ -1062,13 +1254,16 @@ void PktHandler(void)
 			//  6 - Control point being manipulated
 			//  7 - Turnout normal/reverse
 			//  8 - Clear eastbound or westbound
-			CodeCTCRoute(rxBuffer[6], rxBuffer[7], PktDirToClearance(rxBuffer[8]));
+			if (E_CONTROLPOINT == rxBuffer[6] && STATE_LOCKED == eastTurnoutState)
+				CodeCTCRoute(E_CONTROLPOINT, rxBuffer[7], PktDirToClearance(rxBuffer[8]));
+			else if (W_CONTROLPOINT == rxBuffer[6] && STATE_LOCKED == westTurnoutState)
+				CodeCTCRoute(W_CONTROLPOINT, rxBuffer[7], PktDirToClearance(rxBuffer[8]));
 			goto PktIgnore;
 
 		case 'T':
-			if (1 == rxBuffer[6])
+			if (1 == rxBuffer[6] && STATE_LOCKED == eastTurnoutState)
 				CodeCTCRoute(E_CONTROLPOINT, rxBuffer[6], CLEARANCE_NONE);
-			else if (2 == rxBuffer[6])
+			else if (2 == rxBuffer[6] && STATE_LOCKED == westTurnoutState)
 				CodeCTCRoute(W_CONTROLPOINT, rxBuffer[6], CLEARANCE_NONE);		
 			goto PktIgnore;
 
@@ -1135,11 +1330,11 @@ void PktHandler(void)
 
 
 	/*************** NOT A PACKET WE EXPLICITLY UNDERSTAND, TRY BIT/BYTE RULES ***************/
-	for (i=0; i<8; i++)
+	for (i=0; i<12; i++)
 	{
 		uint8_t byte, bitset=0;
-		
-		if (rxBuffer[MRBUS_PKT_SRC] != eeprom_read_byte((uint8_t*)(i+EE_E_APRCH_ADDR)))
+		uint8_t srcAddr = eeprom_read_byte((uint8_t*)(i+EE_E_APRCH_ADDR));
+		if (rxBuffer[MRBUS_PKT_SRC] != srcAddr || 0x00 == srcAddr)
 			continue;
 
 		if (rxBuffer[MRBUS_PKT_TYPE] != eeprom_read_byte((uint8_t*)(i+EE_E_APRCH_PKT)))
@@ -1215,7 +1410,33 @@ void PktHandler(void)
 					ext_occupancy &= ~(XOCC_E_TUMBLE);
 				break;
 
+			case EE_E_OS_ADDR:
+				if (bitset)
+					occupancy |= OCC_E_OS_SECT;
+				else
+					occupancy &= ~(OCC_E_OS_SECT);
+				break;
 
+			case EE_W_OS_ADDR:
+				if (bitset)
+					occupancy |= OCC_W_OS_SECT;
+				else
+					occupancy &= ~(OCC_W_OS_SECT);
+				break;
+
+			case EE_MAIN_ADDR:
+				if (bitset)
+					occupancy |= OCC_CTC_MAIN;
+				else
+					occupancy &= ~(OCC_CTC_MAIN);
+				break;
+
+			case EE_SIDING_ADDR:
+				if (bitset)
+					occupancy |= OCC_CTC_SIDING;
+				else
+					occupancy &= ~(OCC_CTC_SIDING);
+				break;
 		}
 	}
 	//*************** END PACKET HANDLER  ***************

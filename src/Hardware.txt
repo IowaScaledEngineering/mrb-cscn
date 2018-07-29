@@ -35,8 +35,8 @@ C5 - East Siding Signal Red
 C6 - East Siding Signal Yellow
 C7 - East Siding Signal Green
 
-D0 - n/c
-D1 - n/c
+D0 - East Turnout Timelock LED
+D1 - West Turnout Timelock LED
 D2 - n/c
 D3 - n/c
 D4 - East Turnout Control (low = Normal)
@@ -44,10 +44,10 @@ D5 - West Turnout Control (low = Normal)
 D6 - East Turnout Position (low = Normal)
 D7 - West Turnout Position (low = Normal)
 
-E0 - East Turnout Request Normal
-E1 - East Turnout Request Reverse
-E2 - West Turnout Request Normal
-E3 - West Turnout Request Reverse
+E0 - East Turnout Request (+5=Normal, GND=Rev)
+E1 - West Turnout Request (+5=Normal, GND=Rev)
+E2 - East Turnout Unlock (+5=Normal, GND=Unlock)
+E3 - West Turnout Unlock (+5=Normal, GND=Unlock)
 E4 - (via BD4X) West OS occupancy
 E5 - (via BD4X) East OS occupancy
 E6 - (via BD4X) Siding occupancy
