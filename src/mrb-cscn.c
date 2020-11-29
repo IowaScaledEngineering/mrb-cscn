@@ -20,6 +20,7 @@ LICENSE:
 *************************************************************************/
 
 #include <stdlib.h>
+#include <stdbool.h>
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <avr/eeprom.h>
@@ -927,6 +928,9 @@ static inline void vitalLogic()
 	}	
 }
 
+#define eastPointsUnlockedSwitch()  ((debounced_inputs[1] & E_PNTS_UNLOCK)?false:true)
+#define westPointsUnlockedSwitch()  ((debounced_inputs[1] & W_PNTS_UNLOCK)?false:true)
+
 int main(void)
 {
 	uint8_t changed = 0;
@@ -988,7 +992,7 @@ int main(void)
 			switch(eastTurnoutState)
 			{
 				case STATE_LOCKED:
-					if (debounced_inputs[1] & E_PNTS_UNLOCK)
+					if (eastPointsUnlockedSwitch())
 					{
 						eastTimeCounter = eeprom_read_byte((uint8_t*)EE_UNLOCK_TIME);
 						eastTurnoutState = STATE_TIMERUN;
@@ -1004,7 +1008,7 @@ int main(void)
 					else
 						xio1Outputs[3] |= E_PNTS_TIMELOCK_LED;
 
-					if (!(debounced_inputs[1] & E_PNTS_UNLOCK))
+					if (!eastPointsUnlockedSwitch())
 						eastTurnoutState = STATE_LOCKED;
 
 					if (0 == eastTimeCounter)
@@ -1019,7 +1023,7 @@ int main(void)
 					else
 						CodeCTCRoute(E_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
 
-					if (!(debounced_inputs[1] & E_PNTS_UNLOCK))
+					if (!eastPointsUnlockedSwitch())
 						eastTurnoutState = STATE_RELOCKING;
 					break;
 
@@ -1029,7 +1033,7 @@ int main(void)
 					else
 						CodeCTCRoute(E_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
 
-					if (!(debounced_inputs[1] & E_PNTS_UNLOCK) && !(turnouts & (E_PNTS_STATUS)))
+					if (!eastPointsUnlockedSwitch() && !(turnouts & (E_PNTS_STATUS)))
 						eastTurnoutState = STATE_LOCKED;
 
 					break;
@@ -1042,7 +1046,7 @@ int main(void)
 			switch(westTurnoutState)
 			{
 				case STATE_LOCKED:
-					if (debounced_inputs[1] & W_PNTS_UNLOCK)
+					if (westPointsUnlockedSwitch())
 					{
 						westTimeCounter = eeprom_read_byte((uint8_t*)EE_UNLOCK_TIME);
 						westTurnoutState = STATE_TIMERUN;
@@ -1058,7 +1062,7 @@ int main(void)
 					else
 						xio1Outputs[3] |= W_PNTS_TIMELOCK_LED;
 
-					if (!(debounced_inputs[1] & W_PNTS_UNLOCK))
+					if (!westPointsUnlockedSwitch())
 						westTurnoutState = STATE_LOCKED;
 
 					if (0 == westTimeCounter)
@@ -1073,7 +1077,7 @@ int main(void)
 					else
 						CodeCTCRoute(W_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
 
-					if (!(debounced_inputs[1] & W_PNTS_UNLOCK))
+					if (!westPointsUnlockedSwitch())
 						westTurnoutState = STATE_RELOCKING;
 					break;
 
@@ -1083,7 +1087,7 @@ int main(void)
 					else
 						CodeCTCRoute(W_CONTROLPOINT, POINTS_REVERSE_FORCE, CLEARANCE_NONE);
 
-					if (!(debounced_inputs[1] & W_PNTS_UNLOCK) && !(turnouts & (W_PNTS_STATUS)))
+					if (!westPointsUnlockedSwitch() && !(turnouts & (W_PNTS_STATUS)))
 						westTurnoutState = STATE_LOCKED;
 
 					break;
@@ -1233,7 +1237,7 @@ Byte
 			uint8_t txBuffer[MRBUS_BUFFER_SIZE];
 			txBuffer[MRBUS_PKT_SRC] = mrbus_dev_addr;
 			txBuffer[MRBUS_PKT_DEST] = 0xFF;
-			txBuffer[MRBUS_PKT_LEN] = 14;			
+			txBuffer[MRBUS_PKT_LEN] = 14;
 			txBuffer[5] = 'S';
 
 			txBuffer[6] = ((signalHeads[SIG_E_SIDING]<<4) & 0xF0) | (signalHeads[SIG_E_MAIN] & 0x0F);
