@@ -615,19 +615,27 @@ typedef struct
 	const uint8_t greenMask;
 } SignalPinDefinition;
 
+#define XIO_PORT_A  0
+#define XIO_PORT_B  1
+#define XIO_PORT_C  2
+#define XIO_PORT_D  3
+#define XIO_PORT_E  4
+
 const SignalPinDefinition sigPinDefs[8] = 
 {
-	{SIG_W_PNTS_UPPER, 0, _BV(0), 0, _BV(1), 0, _BV(2)},
-	{SIG_W_PNTS_LOWER, 0, _BV(3), 0, _BV(4), 0, _BV(5)},
-	{SIG_W_MAIN      , 0, _BV(6), 0, _BV(7), 1, _BV(0)},
-	{SIG_W_SIDING    , 1, _BV(1), 1, _BV(2), 1, _BV(3)},
-	{SIG_E_PNTS_UPPER, 1, _BV(4), 1, _BV(5), 1, _BV(6)},
-	{SIG_E_PNTS_LOWER, 1, _BV(7), 2, _BV(0), 2, _BV(1)},
-	{SIG_E_MAIN      , 2, _BV(2), 2, _BV(3), 2, _BV(4)},
-	{SIG_E_SIDING    , 2, _BV(5), 2, _BV(6), 2, _BV(7)}
+	{SIG_W_PNTS_UPPER, XIO_PORT_A, _BV(0), XIO_PORT_A, _BV(1), XIO_PORT_A, _BV(2)},
+	{SIG_W_PNTS_LOWER, XIO_PORT_A, _BV(3), XIO_PORT_A, _BV(4), XIO_PORT_A, _BV(5)},
+	{SIG_W_MAIN      , XIO_PORT_A, _BV(6), XIO_PORT_A, _BV(7), XIO_PORT_B, _BV(0)},
+	{SIG_W_SIDING    , XIO_PORT_B, _BV(1), XIO_PORT_B, _BV(2), XIO_PORT_B, _BV(3)},
+	{SIG_E_PNTS_UPPER, XIO_PORT_B, _BV(4), XIO_PORT_B, _BV(5), XIO_PORT_B, _BV(6)},
+	{SIG_E_PNTS_LOWER, XIO_PORT_B, _BV(7), XIO_PORT_C, _BV(0), XIO_PORT_C, _BV(1)},
+	{SIG_E_MAIN      , XIO_PORT_C, _BV(2), XIO_PORT_C, _BV(3), XIO_PORT_C, _BV(4)},
+	{SIG_E_SIDING    , XIO_PORT_C, _BV(5), XIO_PORT_C, _BV(6), XIO_PORT_C, _BV(7)}
 };
 
-void SignalsToOutputs()
+
+
+void SignalsToOutputs(uint8_t invertSignalOutputs)
 {
 	uint8_t sigDefIdx;
 	for(sigDefIdx=0; sigDefIdx<sizeof(sigPinDefs)/sizeof(SignalPinDefinition); sigDefIdx++)
@@ -639,45 +647,98 @@ void SignalsToOutputs()
 		uint8_t greenByte = sigPinDefs[sigDefIdx].greenByte;
 		uint8_t greenMask = sigPinDefs[sigDefIdx].greenMask;
 
-		xio1Outputs[redByte] |= redMask;
-		xio1Outputs[yellowByte] |= yellowMask;
-		xio1Outputs[greenByte] |= greenMask;
-
-		switch(signalHeads[sigPinDefs[sigDefIdx].signalHead])
+		if (invertSignalOutputs & (1<<sigDefIdx))
 		{
-			case ASPECT_OFF:
-				break;
-		
-			case ASPECT_GREEN:
-				xio1Outputs[greenByte] &= ~greenMask;
-				break;
-		
-			case ASPECT_FL_GREEN:
-				if (events & EVENT_BLINKY)
+			// For active high signals
+
+			xio1Outputs[redByte] &= ~redMask;
+			xio1Outputs[yellowByte] &= ~yellowMask;
+			xio1Outputs[greenByte] &= ~greenMask;
+
+			switch(signalHeads[sigPinDefs[sigDefIdx].signalHead])
+			{
+				case ASPECT_OFF:
+					break;
+			
+				case ASPECT_GREEN:
+					xio1Outputs[greenByte] |= greenMask;
+					break;
+			
+				case ASPECT_FL_GREEN:
+					if (events & EVENT_BLINKY)
+						xio1Outputs[greenByte] |= greenMask;
+					break;
+
+				case ASPECT_YELLOW:
+					xio1Outputs[yellowByte] |= yellowMask;
+					break;
+			
+				case ASPECT_FL_YELLOW:
+					if (events & EVENT_BLINKY)
+						xio1Outputs[yellowByte] |= yellowMask;
+					break;
+			
+			
+				case ASPECT_RED:
+				case ASPECT_LUNAR: // Can't display, so make like red
+				default:
+					xio1Outputs[redByte] |= redMask;
+					break;
+
+				case ASPECT_FL_RED:
+					if (events & EVENT_BLINKY)
+						xio1Outputs[redByte] |= redMask;
+					break;
+			}
+
+
+		} else {
+			// For active high signals
+
+			xio1Outputs[redByte] |= redMask;
+			xio1Outputs[yellowByte] |= yellowMask;
+			xio1Outputs[greenByte] |= greenMask;
+
+			switch(signalHeads[sigPinDefs[sigDefIdx].signalHead])
+			{
+				case ASPECT_OFF:
+					break;
+			
+				case ASPECT_GREEN:
 					xio1Outputs[greenByte] &= ~greenMask;
-				break;
+					break;
+			
+				case ASPECT_FL_GREEN:
+					if (events & EVENT_BLINKY)
+						xio1Outputs[greenByte] &= ~greenMask;
+					break;
 
-			case ASPECT_YELLOW:
-				xio1Outputs[yellowByte] &= ~yellowMask;
-				break;
-		
-			case ASPECT_FL_YELLOW:
-				if (events & EVENT_BLINKY)
+				case ASPECT_YELLOW:
 					xio1Outputs[yellowByte] &= ~yellowMask;
-				break;
-		
-		
-			case ASPECT_RED:
-			case ASPECT_LUNAR: // Can't display, so make like red
-			default:
-				xio1Outputs[redByte] &= ~redMask;
-				break;
-
-			case ASPECT_FL_RED:
-				if (events & EVENT_BLINKY)
+					break;
+			
+				case ASPECT_FL_YELLOW:
+					if (events & EVENT_BLINKY)
+						xio1Outputs[yellowByte] &= ~yellowMask;
+					break;
+			
+			
+				case ASPECT_RED:
+				case ASPECT_LUNAR: // Can't display, so make like red
+				default:
 					xio1Outputs[redByte] &= ~redMask;
-				break;
+					break;
+
+				case ASPECT_FL_RED:
+					if (events & EVENT_BLINKY)
+						xio1Outputs[redByte] &= ~redMask;
+					break;
+			}
+
+
 		}
+
+
 	}
 }
 
@@ -1079,7 +1140,7 @@ int main(void)
 		// Send output
 		if (events & EVENT_WRITE_OUTPUTS)
 		{
-			SignalsToOutputs();
+			SignalsToOutputs(0xff);
 			xioOutputWrite();
 			events &= ~(EVENT_WRITE_OUTPUTS);
 		}
