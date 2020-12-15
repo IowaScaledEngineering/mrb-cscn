@@ -904,7 +904,7 @@ static inline void vitalLogic()
 		else if ((!(turnouts & E_PNTS_STATUS)) && (ASPECT_RED == signalHeads[SIG_W_MAIN] || ASPECT_FL_RED == signalHeads[SIG_W_MAIN]))
 			occupancy |= OCC_VIRT_E_APPROACH;
 	
-		if (ASPECT_RED == signalHeads[SIG_E_PNTS_LOWER] && (ASPECT_RED == signalHeads[SIG_E_PNTS_UPPER] || ASPECT_FL_RED == signalHeads[SIG_E_PNTS_UPPER]))
+		if ((ASPECT_RED == signalHeads[SIG_E_PNTS_LOWER] || ASPECT_FL_RED == signalHeads[SIG_E_PNTS_LOWER]) && (ASPECT_RED == signalHeads[SIG_E_PNTS_UPPER] || ASPECT_FL_RED == signalHeads[SIG_E_PNTS_UPPER]))
 			occupancy |= OCC_VIRT_E_ADJOIN;
 	} else {
 		// East Control Point improperly lined, trip virtual occupancy
@@ -920,7 +920,7 @@ static inline void vitalLogic()
 		else if ((!(turnouts & W_PNTS_STATUS)) && (ASPECT_RED == signalHeads[SIG_E_MAIN] || ASPECT_FL_RED == signalHeads[SIG_E_MAIN]))
 			occupancy |= OCC_VIRT_W_APPROACH;
 	
-		if (ASPECT_RED == signalHeads[SIG_W_PNTS_LOWER] && (ASPECT_RED == signalHeads[SIG_W_PNTS_UPPER] || ASPECT_FL_RED == signalHeads[SIG_W_PNTS_UPPER]))
+		if ((ASPECT_RED == signalHeads[SIG_W_PNTS_LOWER] || ASPECT_FL_RED == signalHeads[SIG_W_PNTS_LOWER]) && (ASPECT_RED == signalHeads[SIG_W_PNTS_UPPER] || ASPECT_FL_RED == signalHeads[SIG_W_PNTS_UPPER]))
 			occupancy |= OCC_VIRT_W_ADJOIN;
 	} else {
 		// West Control Point improperly lined, trip virtual occupancy
