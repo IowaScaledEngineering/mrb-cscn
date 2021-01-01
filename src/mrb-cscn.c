@@ -73,14 +73,14 @@ volatile uint8_t events = 0;
 #define POINTS_REVERSE_FORCE  'd'
 #define POINTS_UNAFFECTED     'X'
 
-#define OCC_CTC_MAIN				0x08
-#define OCC_CTC_SIDING			0x04
-#define OCC_E_OS_SECT			0x02
-#define OCC_W_OS_SECT			0x01
-#define OCC_VIRT_E_ADJOIN     0x10
-#define OCC_VIRT_E_APPROACH   0x20
-#define OCC_VIRT_W_ADJOIN     0x40
-#define OCC_VIRT_W_APPROACH   0x80
+#define OCC_W_OS_SECT           0x01
+#define OCC_E_OS_SECT           0x02
+#define OCC_CTC_SIDING          0x04
+#define OCC_CTC_MAIN            0x08
+#define OCC_VIRT_E_ADJOIN       0x10
+#define OCC_VIRT_E_APPROACH     0x20
+#define OCC_VIRT_W_ADJOIN       0x40
+#define OCC_VIRT_W_APPROACH     0x80
 
 #define XOCC_E_ADJOIN			0x01
 #define XOCC_E_APPROACH			0x02
@@ -107,6 +107,8 @@ volatile uint8_t events = 0;
 
 // EEPROM Location Definitions
 
+
+#define EE_HEADS_COM_ANODE    0x07
 #define EE_OPTIONS            0x08
 // 0x01 - Reverse E turnout direction
 // 0x02 - Reverse W turnout direction
@@ -1144,7 +1146,8 @@ int main(void)
 		// Send output
 		if (events & EVENT_WRITE_OUTPUTS)
 		{
-			SignalsToOutputs(0xff);
+			uint8_t comAnodeHeads = eeprom_read_byte((uint8_t*)EE_HEADS_COM_ANODE);
+			SignalsToOutputs(comAnodeHeads);
 			xioOutputWrite();
 			events &= ~(EVENT_WRITE_OUTPUTS);
 		}
@@ -1289,7 +1292,7 @@ Byte
 			}
 			
 			if (STATE_LOCKED != westTurnoutState)
-				txBuffer[11] |= MRB_STATUS_CP_MANUAL_UNLOCK;
+				txBuffer[12] |= MRB_STATUS_CP_MANUAL_UNLOCK;
 
 			if (turnouts & W_PNTS_STATUS)  // Low is normal, high is reverse
 				txBuffer[12] |= MRB_STATUS_CP_SWITCH_REVERSE;
